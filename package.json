@@ -1,6 +1,6 @@
 {
   "name": "@simonepri/refined-antigravity-acp",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "A hardened wrapper around Google's official Antigravity ACP binary.",
   "homepage": "https://github.com/simonepri/refined-antigravity-acp#readme",
   "bugs": {

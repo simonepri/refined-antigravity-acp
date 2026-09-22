@@ -1,0 +1,8 @@
+{
+  "id": "refined-antigravity-acp",
+  "requirements": {
+    "paseo": "^0.9.0"
+  },
+  "description": "Hardened wrapper for Google Antigravity ACP with bugfixes, hang mitigation, and steering.",
+  "build": [["node", "scripts/build-paseo.js", "--install-root"]]
+}

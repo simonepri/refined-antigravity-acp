@@ -1,0 +1,55 @@
+{
+  "name": "@simonepri/refined-antigravity-acp",
+  "version": "0.1.2",
+  "description": "A hardened wrapper around Google's official Antigravity ACP binary.",
+  "homepage": "https://github.com/simonepri/refined-antigravity-acp#readme",
+  "bugs": {
+    "url": "https://github.com/simonepri/refined-antigravity-acp/issues"
+  },
+  "license": "MIT",
+  "author": "Simone Primarosa <simone.primarosa@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/simonepri/refined-antigravity-acp.git"
+  },
+  "bin": {
+    "refined-antigravity-acp": "dist/bin/cli.js"
+  },
+  "files": [
+    "dist",
+    "build/paseo",
+    "scripts",
+    "paseo-plugin.json",
+    "readme.md",
+    "license",
+    "assets"
+  ],
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "dead-code": "fallow dead-code",
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "pnpm build && pnpm build:paseo",
+    "build:paseo": "node scripts/build-paseo.js"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "^0.9.0",
+    "@types/node": "^24.3.0",
+    "fallow": "^3.28.0",
+    "oxfmt": "^0.70.0",
+    "oxlint": "^1.85.0",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.1"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "packageManager": "pnpm@9.15.4"
+}

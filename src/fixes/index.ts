@@ -5,6 +5,7 @@ import { missingSlashSkillsFix } from "./missing-slash-skills/index.js";
 import { subagentHangFix } from "./subagent-hang/index.js";
 import { malformedStreamSyntaxFix } from "./malformed-stream-syntax/index.js";
 import { activeTurnCollisionFix } from "./active-turn-collision/index.js";
+import { cancellationLeakFix } from "./cancellation-leak/index.js";
 
 export * from "./missing-localharness/index.js";
 export * from "./missing-system-prompt/index.js";
@@ -12,6 +13,7 @@ export * from "./missing-slash-skills/index.js";
 export * from "./subagent-hang/index.js";
 export * from "./malformed-stream-syntax/index.js";
 export * from "./active-turn-collision/index.js";
+export * from "./cancellation-leak/index.js";
 
 /**
  * Returns a list of all active fixes addressing the upstream issues documented in readme.md.
@@ -26,5 +28,6 @@ export function createDefaultFixes(): AcpFix[] {
     subagentHangFix,
     malformedStreamSyntaxFix,
     activeTurnCollisionFix,
+    cancellationLeakFix,
   ];
 }

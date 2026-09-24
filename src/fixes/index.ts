@@ -5,7 +5,6 @@ import { missingSlashSkillsFix } from "./missing-slash-skills/index.js";
 import { subagentHangFix } from "./subagent-hang/index.js";
 import { malformedStreamSyntaxFix } from "./malformed-stream-syntax/index.js";
 import { activeTurnCollisionFix } from "./active-turn-collision/index.js";
-import { cancellationLeakFix } from "./cancellation-leak/index.js";
 import { staleMcpEndpointsFix } from "./stale-mcp-endpoints/index.js";
 import { orphanedCheckpointsFix } from "./orphaned-checkpoints/index.js";
 import { droppedHistoryChunksFix } from "./dropped-history-chunks/index.js";
@@ -13,8 +12,10 @@ import { noisyStderrLogsFix } from "./noisy-stderr-logs/index.js";
 import { flattenedModelEffortsFix } from "./flattened-model-efforts/index.js";
 import { nonCanonicalModeIdsFix } from "./non-canonical-mode-ids/index.js";
 import { silentBackgroundTasksFix } from "./silent-background-tasks/index.js";
+import { cancellationLeakFix } from "./cancellation-leak/index.js";
 import { missingUsageMetricsFix } from "./missing-usage-metrics/index.js";
 import { danglingToolCallsFix } from "./dangling-tool-calls/index.js";
+import { missingQuestionFallbackFix } from "./missing-question-fallback/index.js";
 
 export * from "./missing-localharness/index.js";
 export * from "./missing-system-prompt/index.js";
@@ -22,7 +23,6 @@ export * from "./missing-slash-skills/index.js";
 export * from "./subagent-hang/index.js";
 export * from "./malformed-stream-syntax/index.js";
 export * from "./active-turn-collision/index.js";
-export * from "./cancellation-leak/index.js";
 export * from "./stale-mcp-endpoints/index.js";
 export * from "./orphaned-checkpoints/index.js";
 export * from "./dropped-history-chunks/index.js";
@@ -30,8 +30,10 @@ export * from "./noisy-stderr-logs/index.js";
 export * from "./flattened-model-efforts/index.js";
 export * from "./non-canonical-mode-ids/index.js";
 export * from "./silent-background-tasks/index.js";
+export * from "./cancellation-leak/index.js";
 export * from "./missing-usage-metrics/index.js";
 export * from "./dangling-tool-calls/index.js";
+export * from "./missing-question-fallback/index.js";
 
 /**
  * Returns a list of all active fixes addressing the upstream issues documented in readme.md.
@@ -56,5 +58,6 @@ export function createDefaultFixes(): AcpFix[] {
     flattenedModelEffortsFix,
     nonCanonicalModeIdsFix,
     missingUsageMetricsFix,
+    missingQuestionFallbackFix,
   ];
 }

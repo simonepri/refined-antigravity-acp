@@ -20,6 +20,7 @@ export * from "./core/transport.js";
 export * from "./core/pipeline.js";
 export * from "./core/supervisor.js";
 export * from "./core/command.js";
+export * from "./setup.js";
 
 export const PROMPT_RETRY_DELAY_MS = DEFAULT_PROMPT_RETRY_DELAY_MS;
 

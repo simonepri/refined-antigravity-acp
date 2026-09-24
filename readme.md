@@ -162,19 +162,51 @@ The matrix below documents upstream defects across process startup, turn executi
 
 ## Setup
 
+### Automatic Configuration (Recommended)
+
+Run the one-line setup command to install and configure both Paseo and Zed:
+
+```bash
+pnpm add -g @simonepri/refined-antigravity-acp && refined-antigravity-acp setup
+```
+
+To configure a specific editor only:
+
+```bash
+refined-antigravity-acp setup paseo   # Configures ~/.paseo/config.json & restarts daemon
+refined-antigravity-acp setup zed     # Configures Zed settings.json
+```
+
+The setup command resolves your active Node runtime (`process.execPath`) and global CLI path automatically, handles Zed JSONC comments safely, and restarts the Paseo daemon.
+
+---
+
+### Manual Configuration
+
 Install globally:
 
 ```bash
-npm install -g @simonepri/refined-antigravity-acp
+pnpm add -g @simonepri/refined-antigravity-acp
+```
+
+Locate installed binary paths:
+
+```bash
+which node
 which refined-antigravity-acp
+which pnpm
 ```
 
 > [!TIP]
 > The wrapper downloads `agy_acp_server.par` if not already installed locally.
 
+---
+
 ### 1. Paseo (ACP Agent Provider)
 
 Register the wrapper in `~/.paseo/config.json` under `agents.providers`:
+
+#### Global Binary (Recommended)
 
 ```json
 {
@@ -183,7 +215,7 @@ Register the wrapper in `~/.paseo/config.json` under `agents.providers`:
       "refined-antigravity-acp": {
         "extends": "acp",
         "label": "Antigravity",
-        "command": ["/usr/local/bin/refined-antigravity-acp"],
+        "command": ["<node-path>", "<refined-antigravity-acp-path>"],
         "enabled": true
       }
     }
@@ -191,7 +223,31 @@ Register the wrapper in `~/.paseo/config.json` under `agents.providers`:
 }
 ```
 
-Zero-install alternative: `"command": ["pnpm", "dlx", "@simonepri/refined-antigravity-acp"]`.
+> [!NOTE]
+> The Paseo daemon runs outside the login shell environment. Providing absolute paths from `which node` and `which refined-antigravity-acp` prevents `env: node: No such file or directory` errors.
+
+#### Zero-Install (pnpm dlx)
+
+```json
+{
+  "agents": {
+    "providers": {
+      "refined-antigravity-acp": {
+        "extends": "acp",
+        "label": "Antigravity",
+        "command": ["<pnpm-path>", "dlx", "@simonepri/refined-antigravity-acp"],
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+Restart the Paseo daemon after modifying `config.json`:
+
+```bash
+paseo daemon restart
+```
 
 ---
 
@@ -199,21 +255,40 @@ Zero-install alternative: `"command": ["pnpm", "dlx", "@simonepri/refined-antigr
 
 Add `refined-antigravity-acp` to your Zed `settings.json` under `agent.profiles`:
 
+#### Global Binary (Recommended)
+
 ```json
 {
   "agent": {
     "profiles": {
       "antigravity": {
         "type": "acp",
-        "command": "/usr/local/bin/refined-antigravity-acp",
-        "args": []
+        "command": "<node-path>",
+        "args": ["<refined-antigravity-acp-path>"]
       }
     }
   }
 }
 ```
 
-Zero-install alternative: `"command": "pnpm", "args": ["dlx", "@simonepri/refined-antigravity-acp"]`.
+> [!NOTE]
+> Zed launches external agent processes without inheriting shell version manager PATH variables. Explicit paths from `which node` and `which refined-antigravity-acp` ensure reliable execution.
+
+#### Zero-Install (pnpm dlx)
+
+```json
+{
+  "agent": {
+    "profiles": {
+      "antigravity": {
+        "type": "acp",
+        "command": "<pnpm-path>",
+        "args": ["dlx", "@simonepri/refined-antigravity-acp"]
+      }
+    }
+  }
+}
+```
 
 ---
 

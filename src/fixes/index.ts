@@ -12,6 +12,7 @@ import { droppedHistoryChunksFix } from "./dropped-history-chunks/index.js";
 import { noisyStderrLogsFix } from "./noisy-stderr-logs/index.js";
 import { flattenedModelEffortsFix } from "./flattened-model-efforts/index.js";
 import { nonCanonicalModeIdsFix } from "./non-canonical-mode-ids/index.js";
+import { silentBackgroundTasksFix } from "./silent-background-tasks/index.js";
 
 export * from "./missing-localharness/index.js";
 export * from "./missing-system-prompt/index.js";
@@ -26,6 +27,7 @@ export * from "./dropped-history-chunks/index.js";
 export * from "./noisy-stderr-logs/index.js";
 export * from "./flattened-model-efforts/index.js";
 export * from "./non-canonical-mode-ids/index.js";
+export * from "./silent-background-tasks/index.js";
 
 /**
  * Returns a list of all active fixes addressing the upstream issues documented in readme.md.
@@ -38,6 +40,7 @@ export function createDefaultFixes(): AcpFix[] {
     missingSystemPromptFix,
     missingSlashSkillsFix,
     subagentHangFix,
+    silentBackgroundTasksFix,
     malformedStreamSyntaxFix,
     activeTurnCollisionFix,
     cancellationLeakFix,

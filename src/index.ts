@@ -9,6 +9,7 @@ import { ProcessSupervisor } from "./core/supervisor.js";
 // Dedicated Fixes (Mapped 1:1 to Readme Table)
 import { createDefaultFixes } from "./fixes/index.js";
 import { resolveBinaryCommand } from "./fixes/missing-localharness/index.js";
+import { DEFAULT_PROMPT_RETRY_DELAY_MS } from "./fixes/active-turn-collision/index.js";
 
 // Export all fixes and plumbing
 export * from "./fixes/index.js";
@@ -18,6 +19,8 @@ export * from "./core/transport.js";
 export * from "./core/pipeline.js";
 export * from "./core/supervisor.js";
 export * from "./core/command.js";
+
+export const PROMPT_RETRY_DELAY_MS = DEFAULT_PROMPT_RETRY_DELAY_MS;
 
 export interface AntigravityConnectorOptions {
   spawnProcess?: (cmd: string, args: string[]) => ChildProcess | Promise<ChildProcess>;

@@ -127,7 +127,6 @@ export class StreamSanitizer {
       if (sysResult.matched) {
         output += sysResult.outputPrefix;
         input = sysResult.remainder;
-        this.harnessStack.push("system_message");
         continue;
       }
 
@@ -192,17 +191,31 @@ export class StreamSanitizer {
     remainder: string;
     matched: boolean;
   } {
-    if (input.includes("SYSTEM_MESSAGE")) {
-      const sysMatch = input.match(SYSTEM_MSG_MATCH_RE);
-      if (sysMatch && sysMatch.index !== undefined) {
-        return {
-          outputPrefix: input.slice(0, sysMatch.index),
-          remainder: input.slice(sysMatch.index + sysMatch[0].length),
-          matched: true,
-        };
-      }
+    if (!input.includes("SYSTEM_MESSAGE")) {
+      return { outputPrefix: "", remainder: input, matched: false };
     }
-    return { outputPrefix: "", remainder: input, matched: false };
+    const sysMatch = input.match(SYSTEM_MSG_MATCH_RE);
+    if (!sysMatch || sysMatch.index === undefined) {
+      return { outputPrefix: "", remainder: input, matched: false };
+    }
+    // If the matched banner line has no newline at the end and no tag immediately follows,
+    // buffer it because more text on this line could still be streaming in.
+    if (
+      !sysMatch[0].endsWith("\n") &&
+      !input.slice(sysMatch.index + sysMatch[0].length).startsWith("<")
+    ) {
+      this.buffer = input.slice(sysMatch.index);
+      return {
+        outputPrefix: input.slice(0, sysMatch.index),
+        remainder: "",
+        matched: true,
+      };
+    }
+    return {
+      outputPrefix: input.slice(0, sysMatch.index),
+      remainder: input.slice(sysMatch.index + sysMatch[0].length),
+      matched: true,
+    };
   }
 
   private handleHarnessTag(tagName: string, isClosing: boolean): void {

@@ -31,6 +31,27 @@ describe("StreamSanitizer", () => {
     sanitizer.reset();
     expect(sanitizer.process("Visible text after reset")).toBe("Visible text after reset");
   });
+
+  it("does not swallow assistant message following synthetic system message block", () => {
+    const sanitizer = new StreamSanitizer();
+    const raw =
+      "\n\nThe following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n<SYSTEM_MESSAGE>\n[Message] timestamp=2026-09-24T18:40:02.164Z sender=task-637\nDone\n</SYSTEM_MESSAGE>Parity Prompt 33 is fully implemented.";
+    const result = sanitizer.process(raw) + sanitizer.flush();
+    expect(result.trim()).toBe("Parity Prompt 33 is fully implemented.");
+  });
+
+  it("handles synthetic system message block streamed in small chunks", () => {
+    const sanitizer = new StreamSanitizer();
+    const raw =
+      "\n\nThe following is a <SYSTEM_MESSAGE> not actually sent by the user. It is provided by the system as important information to pay attention to.\n\n<SYSTEM_MESSAGE>\n[Message] task done\n</SYSTEM_MESSAGE>Assistant message preserved.";
+    let output = "";
+    const chunkSize = 15;
+    for (let i = 0; i < raw.length; i += chunkSize) {
+      output += sanitizer.process(raw.slice(i, i + chunkSize));
+    }
+    output += sanitizer.flush();
+    expect(output.trim()).toBe("Assistant message preserved.");
+  });
 });
 
 describe("streamSanitizationFix", () => {

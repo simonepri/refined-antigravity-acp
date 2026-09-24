@@ -28,6 +28,6 @@ jobs:
       - name: Setup yamllint
         run: pip install --user yamllint
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run check
       - run: pnpm run build
+      - run: pnpm run check
       - run: pnpm run test

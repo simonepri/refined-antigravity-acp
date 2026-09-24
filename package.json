@@ -2,6 +2,24 @@
   "name": "@simonepri/refined-antigravity-acp",
   "version": "1.0.0",
   "description": "A hardened wrapper around Google's official Antigravity ACP binary.",
+  "keywords": [
+    "acp",
+    "acp-protocol",
+    "agent-client-protocol",
+    "agy",
+    "agy-acp",
+    "agy-proxy",
+    "antigravity",
+    "antigravity-acp",
+    "antigravity-ai",
+    "gemini",
+    "google-antigravity",
+    "mcp",
+    "paseo",
+    "provider",
+    "refined",
+    "zed"
+  ],
   "homepage": "https://github.com/simonepri/refined-antigravity-acp#readme",
   "bugs": {
     "url": "https://github.com/simonepri/refined-antigravity-acp/issues"
@@ -38,7 +56,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
     "lint:json": "node bin/lint-json.mjs",
-    "lint:pub": "publint --strict",
+    "lint:pub": "pnpm run build && publint --strict",
     "lint:md": "mmdlint readme.md",
     "lint:actions": "actionlint",
     "lint:yaml": "yamllint .github/workflows/",

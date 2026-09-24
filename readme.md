@@ -44,6 +44,9 @@
   </a>
   <br>
   <!-- Distribution -->
+  <a href="https://www.npmjs.com/package/@simonepri/refined-antigravity-acp">
+    <img src="https://img.shields.io/npm/v/@simonepri/refined-antigravity-acp?logo=npm&amp;logoColor=white" alt="npm version">
+  </a>
   <a href="https://github.com/simonepri/refined-antigravity-acp/stargazers">
     <img src="https://img.shields.io/github/stars/simonepri/refined-antigravity-acp?style=flat&amp;logo=github&amp;logoColor=white" alt="GitHub stars">
   </a>
@@ -66,7 +69,7 @@
 
 ## Overview
 
-**Refined Antigravity ACP** is a proxy wrapper around Google's official Antigravity ACP binary ([`agy_acp_server.par`](https://dl.google.com/agy-extensions/releases/)).
+**Refined Antigravity ACP** is a proxy wrapper around Google's official Antigravity ACP binary (`agy_acp_server.par`).
 
 Google's binary executes models, agent loops, and tool calls. This proxy intercepts the ACP stream between editor and server to fix upstream crashes and deadlocks, normalize MCP traffic, and integrate with **Paseo**, **Zed**, and other ACP clients.
 
@@ -167,7 +170,7 @@ which refined-antigravity-acp
 ```
 
 > [!TIP]
-> The wrapper downloads [`agy_acp_server.par`](https://dl.google.com/agy-extensions/releases/) if not already installed locally.
+> The wrapper downloads `agy_acp_server.par` if not already installed locally.
 
 ### 1. Paseo (ACP Agent Provider)
 

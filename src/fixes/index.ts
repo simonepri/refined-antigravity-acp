@@ -14,6 +14,7 @@ import { flattenedModelEffortsFix } from "./flattened-model-efforts/index.js";
 import { nonCanonicalModeIdsFix } from "./non-canonical-mode-ids/index.js";
 import { silentBackgroundTasksFix } from "./silent-background-tasks/index.js";
 import { missingUsageMetricsFix } from "./missing-usage-metrics/index.js";
+import { danglingToolCallsFix } from "./dangling-tool-calls/index.js";
 
 export * from "./missing-localharness/index.js";
 export * from "./missing-system-prompt/index.js";
@@ -30,6 +31,7 @@ export * from "./flattened-model-efforts/index.js";
 export * from "./non-canonical-mode-ids/index.js";
 export * from "./silent-background-tasks/index.js";
 export * from "./missing-usage-metrics/index.js";
+export * from "./dangling-tool-calls/index.js";
 
 /**
  * Returns a list of all active fixes addressing the upstream issues documented in readme.md.
@@ -46,6 +48,7 @@ export function createDefaultFixes(): AcpFix[] {
     malformedStreamSyntaxFix,
     activeTurnCollisionFix,
     cancellationLeakFix,
+    danglingToolCallsFix,
     staleMcpEndpointsFix,
     orphanedCheckpointsFix,
     droppedHistoryChunksFix,

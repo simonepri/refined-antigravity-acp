@@ -23,7 +23,7 @@ import {
   type SessionUpdatePayload,
 } from "../../core/types.js";
 
-import { extractSessionId } from "../../core/session-cache.js";
+import { extractSessionId, setFixData } from "../../core/session-cache.js";
 import { TELEMETRY_STATES, parseTrajectoryStateUpdate } from "../../core/telemetry.js";
 
 export const TOOL_INVOKE_SUBAGENT = "invoke_subagent";
@@ -568,6 +568,39 @@ function processStderrLine(
   return false;
 }
 
+function forwardCancelPromptMsg(cancelPromptMsg: AcpStreamMessage, context: OutboundContext): void {
+  const id = (cancelPromptMsg as { id?: string | number | null }).id;
+  if (context.session && id !== undefined && id !== null) {
+    setFixData(context.session, "cancelPromptSettled", id);
+  }
+  context.forwardInbound?.(cancelPromptMsg);
+}
+
+function handleOutboundCancel(
+  sessionId: string,
+  tracker: BackgroundTasksTracker,
+  context: OutboundContext,
+): void {
+  const { planMsg, cancelPromptMsg } = tracker.onCancel(sessionId);
+  if (planMsg) context.forwardInbound?.(planMsg);
+  if (cancelPromptMsg) forwardCancelPromptMsg(cancelPromptMsg, context);
+}
+
+function handleOutbound(
+  msg: AcpStreamMessage,
+  tracker: BackgroundTasksTracker,
+  context: OutboundContext,
+): AcpStreamMessage {
+  const sessionId = extractSessionId(msg);
+  if (isMethod(msg, ACP_METHODS.SESSION_PROMPT)) {
+    const promptId = (msg as { id?: string | number }).id;
+    if (sessionId) tracker.onPromptStart(sessionId, promptId);
+  } else if (isMethod(msg, ACP_METHODS.SESSION_CANCEL)) {
+    if (sessionId) handleOutboundCancel(sessionId, tracker, context);
+  }
+  return msg;
+}
+
 export function createSilentBackgroundTasksFix(
   _options?: BackgroundTasksOptions | undefined,
 ): AcpFix & { tracker: BackgroundTasksTracker } {
@@ -580,23 +613,7 @@ export function createSilentBackgroundTasksFix(
     tracker,
 
     onOutbound(msg: AcpStreamMessage, context: OutboundContext): AcpStreamMessage {
-      if (isMethod(msg, ACP_METHODS.SESSION_PROMPT)) {
-        const sessionId = extractSessionId(msg);
-        const promptId = (msg as { id?: string | number }).id;
-        if (sessionId) tracker.onPromptStart(sessionId, promptId);
-      } else if (isMethod(msg, ACP_METHODS.SESSION_CANCEL)) {
-        const sessionId = extractSessionId(msg);
-        if (sessionId) {
-          const { planMsg, cancelPromptMsg } = tracker.onCancel(sessionId);
-          if (planMsg) {
-            context.forwardInbound?.(planMsg);
-          }
-          if (cancelPromptMsg) {
-            context.forwardInbound?.(cancelPromptMsg);
-          }
-        }
-      }
-      return msg;
+      return handleOutbound(msg, tracker, context);
     },
 
     onInbound(msg: AcpStreamMessage, context: InboundContext): AcpStreamMessage[] {

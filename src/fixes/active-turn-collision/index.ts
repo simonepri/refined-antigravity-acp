@@ -43,6 +43,7 @@ export interface UserSteeringOptions {
 interface PendingRetryItem {
   msg: AcpStreamMessage;
   attempts: number;
+  recycled?: boolean;
 }
 
 function parsePromptError(msg: AcpStreamMessage): { isDoneCh: boolean } | null {
@@ -53,7 +54,7 @@ function parsePromptError(msg: AcpStreamMessage): { isDoneCh: boolean } | null {
   return null;
 }
 
-async function handleDoneChRecovery(
+async function handleSessionRecovery(
   pendingMsg: AcpStreamMessage,
   context: InboundContext,
 ): Promise<void> {
@@ -94,6 +95,49 @@ function schedulePromptRetry(
   retryTimer.unref?.();
 }
 
+async function handlePromptRetryOrRecovery(
+  msgId: string | number,
+  pending: PendingRetryItem,
+  isDoneCh: boolean,
+  delayMs: number,
+  maxRetries: number,
+  context: InboundContext,
+): Promise<boolean> {
+  if (isDoneCh) {
+    await handleSessionRecovery(pending.msg, context);
+  }
+
+  if (pending.attempts >= maxRetries) {
+    if (!isDoneCh && !pending.recycled) {
+      pending.recycled = true;
+      pending.attempts = 0;
+      console.warn(
+        `[refined-antigravity-acp] Foreground turn collision persisted for prompt ${msgId}; recycling process to recover`,
+      );
+      await handleSessionRecovery(pending.msg, context);
+      schedulePromptRetry(msgId, pending, 0, context);
+      return true;
+    }
+    return false;
+  }
+
+  pending.attempts += 1;
+  schedulePromptRetry(msgId, pending, isDoneCh ? 0 : delayMs, context);
+  return true;
+}
+
+function trackOutboundPrompt(
+  msg: AcpStreamMessage,
+  pendingPromptRetries: Map<string | number, PendingRetryItem>,
+): void {
+  if (isJsonRpcRequest(msg) && msg.method === ACP_METHODS.SESSION_PROMPT) {
+    pendingPromptRetries.set(msg.id, {
+      msg: structuredClone(msg),
+      attempts: 0,
+    });
+  }
+}
+
 export const USER_STEERING_INSTRUCTIONS: readonly string[] = [
   "When receiving a mid-turn update, question, or redirection, acknowledge and address it directly in your response before proceeding or stopping.",
 ];
@@ -113,12 +157,7 @@ export function createActiveTurnCollisionFix(options?: UserSteeringOptions): Acp
     },
 
     onOutbound: (msg: AcpStreamMessage): AcpStreamMessage => {
-      if (isJsonRpcRequest(msg) && msg.method === ACP_METHODS.SESSION_PROMPT) {
-        pendingPromptRetries.set(msg.id, {
-          msg: structuredClone(msg),
-          attempts: 0,
-        });
-      }
+      trackOutboundPrompt(msg, pendingPromptRetries);
       return msg;
     },
 
@@ -136,17 +175,18 @@ export function createActiveTurnCollisionFix(options?: UserSteeringOptions): Acp
         return [msg];
       }
 
-      if (parsed.isDoneCh) {
-        await handleDoneChRecovery(pending.msg, context);
-      }
-
-      if (pending.attempts >= maxRetries) {
+      const retried = await handlePromptRetryOrRecovery(
+        msg.id,
+        pending,
+        parsed.isDoneCh,
+        delayMs,
+        maxRetries,
+        context,
+      );
+      if (!retried) {
         pendingPromptRetries.delete(msg.id);
         return [msg];
       }
-
-      pending.attempts += 1;
-      schedulePromptRetry(msg.id, pending, parsed.isDoneCh ? 0 : delayMs, context);
       return [];
     },
 

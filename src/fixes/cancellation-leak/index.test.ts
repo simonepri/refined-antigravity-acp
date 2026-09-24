@@ -163,4 +163,86 @@ describe("interruptionCleanupFix", () => {
     const res = interruptionCleanupFix.onInbound?.(normalMsg, createMockContext());
     expect(res).toEqual([normalMsg]);
   });
+
+  it("synthesizes immediate cancelled prompt response when client cancels in-flight turn", () => {
+    const fix = interruptionCleanupFix;
+    let forwardedInbound: AcpStreamMessage | null = null;
+    const mockCtx = {
+      ...createMockContext(),
+      forwardInbound: (msg: AcpStreamMessage) => {
+        forwardedInbound = msg;
+      },
+    };
+
+    const promptMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 201,
+      method: "session/prompt",
+      params: { sessionId: "sess-cancel-test", prompt: [{ type: "text", text: "slow tool" }] },
+    } as unknown as AcpStreamMessage;
+
+    fix.onOutbound?.(promptMsg, mockCtx);
+
+    const cancelMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: "session/cancel",
+      params: { sessionId: "sess-cancel-test" },
+    } as unknown as AcpStreamMessage;
+
+    fix.onOutbound?.(cancelMsg, mockCtx);
+
+    expect(forwardedInbound).toEqual({
+      jsonrpc: "2.0",
+      id: 201,
+      result: { stopReason: "cancelled" },
+    });
+  });
+
+  it("drops late upstream response and late stream update chunks for cancelled turn", () => {
+    const fix = interruptionCleanupFix;
+    const mockCtx = createMockContext();
+
+    const promptMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 202,
+      method: "session/prompt",
+      params: { sessionId: "sess-drop-test", prompt: [{ type: "text", text: "slow tool" }] },
+    } as unknown as AcpStreamMessage;
+
+    fix.onOutbound?.(promptMsg, mockCtx);
+
+    const cancelMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: "session/cancel",
+      params: { sessionId: "sess-drop-test" },
+    } as unknown as AcpStreamMessage;
+
+    fix.onOutbound?.(cancelMsg, mockCtx);
+
+    // Late stream update chunk arrives from upstream -> dropped
+    const lateChunk: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "sess-drop-test",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "tool output after cancel" },
+        },
+      },
+    } as unknown as AcpStreamMessage;
+
+    const chunkRes = fix.onInbound?.(lateChunk, mockCtx);
+    expect(chunkRes).toEqual([]);
+
+    // Late prompt response arrives from upstream -> dropped
+    const lateResponse: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 202,
+      result: { stopReason: "cancelled" },
+    } as unknown as AcpStreamMessage;
+
+    const respRes = fix.onInbound?.(lateResponse, mockCtx);
+    expect(respRes).toEqual([]);
+  });
 });

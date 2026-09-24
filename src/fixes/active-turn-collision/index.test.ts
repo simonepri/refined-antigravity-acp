@@ -81,6 +81,62 @@ describe("userSteeringFix", () => {
     expect(testContext.sessionCache.pendingRequestSessions.get(102)).toBe("s1");
   });
 
+  it("recycles wedged process and retries when foreground turn collision persists past maxRetries", async () => {
+    const fix = createUserSteeringFix({ delayMs: 10, maxRetries: 2 });
+    const promptMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 103,
+      method: "session/prompt",
+      params: { sessionId: "s-stuck", prompt: [{ type: "text", text: "next instruction" }] },
+    } as unknown as AcpStreamMessage;
+
+    fix.onOutbound?.(promptMsg, dummyContext);
+
+    let recycled = false;
+    let writtenToChild: AcpStreamMessage | null = null;
+    const testContext: InboundContext = {
+      sessionCache: {
+        sessions: new Map(),
+        pendingSessionMetadata: new Map(),
+        pendingRequestSessions: new Map(),
+      },
+      forwardInbound: () => {},
+      writeToChild: async (msg) => {
+        writtenToChild = msg;
+      },
+      sendInternalRequest: async () => ({}) as AcpStreamMessage,
+      triggerRecycle: async () => {
+        recycled = true;
+      },
+      declareHang: () => {},
+    };
+
+    const collisionError: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 103,
+      error: { code: -32000, message: "A foreground turn is already active" },
+    } as unknown as AcpStreamMessage;
+
+    // Attempt 1: retries
+    const res1 = await fix.onInbound?.(collisionError, testContext);
+    expect(res1).toEqual([]);
+    expect(recycled).toBe(false);
+
+    // Attempt 2: retries
+    const res2 = await fix.onInbound?.(collisionError, testContext);
+    expect(res2).toEqual([]);
+    expect(recycled).toBe(false);
+
+    // Attempt 3: maxRetries (2) exceeded, triggers recovery and recycle!
+    const res3 = await fix.onInbound?.(collisionError, testContext);
+    expect(res3).toEqual([]);
+    expect(recycled).toBe(true);
+
+    // Wait for the immediate retry timer
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(writtenToChild).toEqual(promptMsg);
+  });
+
   it("provides system instructions requiring direct acknowledgment of mid-turn updates", () => {
     const fix = createUserSteeringFix();
     const instructions = fix.getSystemInstructions?.();

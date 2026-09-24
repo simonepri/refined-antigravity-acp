@@ -3,11 +3,13 @@ import { missingLocalharnessFix } from "./missing-localharness/index.js";
 import { missingSystemPromptFix } from "./missing-system-prompt/index.js";
 import { missingSlashSkillsFix } from "./missing-slash-skills/index.js";
 import { subagentHangFix } from "./subagent-hang/index.js";
+import { malformedStreamSyntaxFix } from "./malformed-stream-syntax/index.js";
 
 export * from "./missing-localharness/index.js";
 export * from "./missing-system-prompt/index.js";
 export * from "./missing-slash-skills/index.js";
 export * from "./subagent-hang/index.js";
+export * from "./malformed-stream-syntax/index.js";
 
 /**
  * Returns a list of all active fixes addressing the upstream issues documented in readme.md.
@@ -20,5 +22,6 @@ export function createDefaultFixes(): AcpFix[] {
     missingSystemPromptFix,
     missingSlashSkillsFix,
     subagentHangFix,
+    malformedStreamSyntaxFix,
   ];
 }

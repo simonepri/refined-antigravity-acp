@@ -1,0 +1,138 @@
+import { describe, expect, it } from "vitest";
+import type { AcpStreamMessage, SessionUpdateParams } from "../../core/types.js";
+import { createMockContext } from "../../test-utils/e2e-harness.js";
+import { createStreamSanitizationFix, StreamSanitizer } from "./index.js";
+
+describe("StreamSanitizer", () => {
+  it("preserves valid assistant response text without modifications", () => {
+    const sanitizer = new StreamSanitizer();
+    expect(sanitizer.process("Hello world")).toBe("Hello world");
+  });
+
+  it("strips internal harness tags split across multiple streaming chunks", () => {
+    const sanitizer = new StreamSanitizer();
+    expect(sanitizer.process("<task_output>")).toBe("");
+    expect(sanitizer.process("hidden output")).toBe("");
+    expect(sanitizer.process("</task_output>Visible text")).toBe("Visible text");
+  });
+
+  it("strips nested harness tags without leaking internal content to the client", () => {
+    const sanitizer = new StreamSanitizer();
+    const res = sanitizer.process(
+      "<task_output>secret1<context>secret2</context>secret3</task_output>Visible text",
+    );
+    expect(res).toBe("Visible text");
+  });
+
+  it("clears incomplete tag state across turn boundaries", () => {
+    const sanitizer = new StreamSanitizer();
+    sanitizer.process("<task_output>unfinished text");
+    // Without reset, subsequent text would be swallowed
+    sanitizer.reset();
+    expect(sanitizer.process("Visible text after reset")).toBe("Visible text after reset");
+  });
+});
+
+describe("streamSanitizationFix", () => {
+  it("resets sanitizer state on new prompt and cancellation to prevent swallowing subsequent turns", async () => {
+    const fix = createStreamSanitizationFix();
+
+    // Simulate an unclosed harness tag during an aborted turn
+    const inboundChunk: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s1",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "<system_instruction>unclosed instruction" },
+        },
+      },
+    } as unknown as AcpStreamMessage;
+    const mockCtx = createMockContext();
+    const filtered = fix.onInbound?.(inboundChunk, mockCtx);
+    expect(filtered).toEqual([]);
+
+    // Now user steers: outbound session/cancel arrives
+    const cancelMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: "session/cancel",
+      params: { sessionId: "s1" },
+    } as unknown as AcpStreamMessage;
+    fix.onOutbound?.(cancelMsg, mockCtx);
+
+    const nextTurnChunk: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s1",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "I was fixing a bug" },
+        },
+      },
+    } as unknown as AcpStreamMessage;
+    const kept = fix.onInbound?.(nextTurnChunk, mockCtx) as AcpStreamMessage[];
+    expect(kept).toHaveLength(1);
+
+    const updateParams = (kept[0] as unknown as { params?: SessionUpdateParams }).params;
+    const content = updateParams?.update?.content as { text?: string };
+    expect(content?.text).toBe("I was fixing a bug");
+  });
+
+  it("clears pending tag buffer when a new user prompt begins", () => {
+    const fix = createStreamSanitizationFix();
+
+    // Start with an unclosed tag
+    fix.sanitizer.process("<system_message>some text");
+
+    const promptMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 200,
+      method: "session/prompt",
+      params: { sessionId: "s1", prompt: [{ type: "text", text: "hello" }] },
+    } as unknown as AcpStreamMessage;
+    fix.onOutbound?.(promptMsg, createMockContext());
+
+    // Sanitizer should now be clean
+    expect(fix.sanitizer.process("Fresh response")).toBe("Fresh response");
+  });
+
+  it("provides system instructions restricting LaTeX math and unsupported Mermaid diagrams", () => {
+    const fix = createStreamSanitizationFix();
+    const instructions = fix.getSystemInstructions?.();
+    expect(instructions).toBeDefined();
+    expect(instructions).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("plain Unicode symbols instead of LaTeX"),
+        expect.stringContaining("Mermaid diagrams"),
+      ]),
+    );
+  });
+});
+
+describe("sanitizeText", () => {
+  it("passes clean assistant output through without alterations", async () => {
+    const { sanitizeText } = await import("./index.js");
+    expect(sanitizeText("Hello, world!")).toBe("Hello, world!");
+  });
+
+  it("removes synthetic system message warning banners from assistant output", async () => {
+    const { sanitizeText } = await import("./index.js");
+    const input =
+      "The following is a <SYSTEM_MESSAGE> not actually sent by the user: context\nReal response";
+    expect(sanitizeText(input)).toBe("Real response");
+  });
+
+  it("removes internal harness blocks and standalone markup tags", async () => {
+    const { sanitizeText } = await import("./index.js");
+    const input = "<task_output>secret</task_output>Visible text<scratchpad>inner</scratchpad>";
+    expect(sanitizeText(input)).toBe("Visible text");
+  });
+
+  it("strips unclosed trailing harness tags to avoid UI formatting corruption", async () => {
+    const { sanitizeText } = await import("./index.js");
+    const input = "Visible before <context>trailing unfinished content";
+    expect(sanitizeText(input)).toBe("Visible before");
+  });
+});

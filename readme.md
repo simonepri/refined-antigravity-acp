@@ -352,12 +352,14 @@ pnpm run test:e2e    # end-to-end integration tests (requires local agy login)
 
 Every fix pull request must follow this structure:
 
-1. **Directory**: Place the fix in `src/fixes/<bug-name>/`, named after the bug (for example, `dangling-tool-calls`). Do not prefix with issue numbers.
-2. **Header**: Add a JSDoc block with `Problem:` and `Solution:` sections at the top of `src/fixes/<bug-name>/index.ts`.
-3. **Tests**: Include both an upstream reproduction (`problem: <description>`) and a fix verification (`solution: <description>`).
-4. **Exports**: Export the fix from [`src/fixes/index.ts`](src/fixes/index.ts) and register it in [`src/index.ts`](src/index.ts).
-5. **Documentation**: Add a row to the table in [`readme.md`](readme.md) linking the fix and tests.
-6. **Verification**: Run quality checks before submitting:
+1. **Reproduction First (E2E)**: Before writing any fix or changing code, you must first reproduce the issue with an end-to-end test in `src/fixes/<bug-name>/index.e2e.test.ts`. The test must fail against the raw upstream binary (`spawnRawAgy()`) labeled with `problem: <description>`.
+2. **Deterministic Over System Prompts**: Prefer programmatic stream transformation, message adaptation, or process supervision over prompt injection. Keep injected system prompts to the absolute minimum necessary; if an issue can be solved deterministically in code without adding or modifying system prompts, that is always preferred.
+3. **Directory**: Place the fix in `src/fixes/<bug-name>/`, named after the bug (for example, `dangling-tool-calls`). Do not prefix with issue numbers.
+4. **Header**: Add a JSDoc block with `Problem:` and `Solution:` sections at the top of `src/fixes/<bug-name>/index.ts`.
+5. **Tests**: Include both an upstream reproduction (`problem: <description>`) and a fix verification (`solution: <description>`) in `src/fixes/<bug-name>/index.e2e.test.ts` (tested against `spawnRawAgy()` vs `spawnWrapped()`), alongside fast hermetic unit tests in `src/fixes/<bug-name>/index.test.ts`.
+6. **Exports**: Export the fix from [`src/fixes/index.ts`](src/fixes/index.ts) and register it in [`src/index.ts`](src/index.ts).
+7. **Documentation**: Add a row to the table in [`readme.md`](readme.md) linking the fix and tests.
+8. **Verification**: Run quality checks before submitting:
    ```bash
    pnpm run check && pnpm run build && pnpm test
    ```

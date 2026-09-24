@@ -1,0 +1,11 @@
+node_modules/
+.pnpm-store/
+dist/
+*.log
+.DS_Store
+# Auth tokens & local secrets
+acp_token.json
+oauth_creds.json
+.env*
+.gemini/
+.fallow/

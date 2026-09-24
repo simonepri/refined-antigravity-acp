@@ -1,0 +1,5 @@
+[tools]
+actionlint = "1.7.12"
+zizmor = "1.29.0"
+uv = "0.12.17"
+yamllint = "1.38.0"

@@ -1,0 +1,70 @@
+{
+  "name": "@simonepri/refined-antigravity-acp",
+  "version": "1.0.0",
+  "description": "A hardened wrapper around Google's official Antigravity ACP binary.",
+  "homepage": "https://github.com/simonepri/refined-antigravity-acp#readme",
+  "bugs": {
+    "url": "https://github.com/simonepri/refined-antigravity-acp/issues"
+  },
+  "license": "MIT",
+  "author": "Simone Primarosa <simone.primarosa@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/simonepri/refined-antigravity-acp.git"
+  },
+  "bin": {
+    "refined-antigravity-acp": "dist/bin/cli.js"
+  },
+  "files": [
+    "dist",
+    "readme.md",
+    "license",
+    "assets"
+  ],
+  "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint",
+    "lint:json": "node bin/lint-json.mjs",
+    "lint:pub": "publint --strict",
+    "lint:md": "mmdlint readme.md",
+    "lint:actions": "actionlint",
+    "lint:yaml": "yamllint .github/workflows/",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "dead-code": "fallow dead-code",
+    "check": "pnpm run format:check && pnpm run lint && pnpm run lint:json && pnpm run lint:pub && pnpm run lint:md && pnpm run lint:actions && pnpm run lint:yaml && pnpm run typecheck && pnpm run dead-code",
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "pnpm build",
+    "test:e2e": "vitest run -c vitest.e2e.config.ts"
+  },
+  "devDependencies": {
+    "@agentclientprotocol/sdk": "^1.5.0",
+    "@sysid/mmdlint": "^0.1.1",
+    "@types/node": "^24.3.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "fallow": "^3.28.0",
+    "oxfmt": "^0.70.0",
+    "oxlint": "^1.85.0",
+    "publint": "^0.3.24",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.1"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "packageManager": "pnpm@9.15.4"
+}

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/main/packages/cli/schema.json",
+  "entry": ["bin/cli.ts"],
+  "rules": {
+    "boundary-violation": "off",
+    "policy-violation": "off",
+    "unused-exports": "off",
+    "unused-class-members": "off",
+    "unused-dependencies": "off",
+    "dev-dependencies-in-production": "off"
+  }
+}

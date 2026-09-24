@@ -1,0 +1,36 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "customDatasources": {
+    "acp-antigravity": {
+      "defaultRegistryUrlTemplate": "https://raw.githubusercontent.com/agentclientprotocol/registry/main/antigravity-acp/agent.json",
+      "format": "json",
+      "transformTemplates": ["{\"releases\": [{\"version\": version}]}"]
+    }
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["^src/core/command\\.ts$"],
+      "matchStrings": ["export const DEFAULT_AGY_VERSION = \"(?<currentValue>[^\"]+)\";"],
+      "depNameTemplate": "google/antigravity-acp",
+      "datasourceTemplate": "custom.acp-antigravity",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
+      "fileMatch": ["^readme\\.md$"],
+      "matchStrings": ["`REFINED_AGY_OFFICIAL_ACP_VERSION`\\s*\\|\\s*`(?<currentValue>[^`]+)`"],
+      "depNameTemplate": "google/antigravity-acp",
+      "datasourceTemplate": "custom.acp-antigravity",
+      "versioningTemplate": "semver"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchPackageNames": ["google/antigravity-acp"],
+      "commitMessageTopic": "official Antigravity ACP binary",
+      "prTitle": "chore(deps): bump official Antigravity ACP binary to {{newVersion}}"
+    }
+  ]
+}

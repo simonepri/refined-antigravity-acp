@@ -62,7 +62,7 @@
 </p>
 
 <p align="center">
-  <strong>A hardened wrapper around Google's official Antigravity ACP binary.</strong>
+  <strong>🤦 A Google Antigravity ACP binary that actually works.</strong>
 </p>
 
 ---

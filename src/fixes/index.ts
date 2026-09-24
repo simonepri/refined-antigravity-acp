@@ -9,6 +9,7 @@ import { cancellationLeakFix } from "./cancellation-leak/index.js";
 import { staleMcpEndpointsFix } from "./stale-mcp-endpoints/index.js";
 import { orphanedCheckpointsFix } from "./orphaned-checkpoints/index.js";
 import { droppedHistoryChunksFix } from "./dropped-history-chunks/index.js";
+import { noisyStderrLogsFix } from "./noisy-stderr-logs/index.js";
 
 export * from "./missing-localharness/index.js";
 export * from "./missing-system-prompt/index.js";
@@ -20,6 +21,7 @@ export * from "./cancellation-leak/index.js";
 export * from "./stale-mcp-endpoints/index.js";
 export * from "./orphaned-checkpoints/index.js";
 export * from "./dropped-history-chunks/index.js";
+export * from "./noisy-stderr-logs/index.js";
 
 /**
  * Returns a list of all active fixes addressing the upstream issues documented in readme.md.
@@ -38,5 +40,6 @@ export function createDefaultFixes(): AcpFix[] {
     staleMcpEndpointsFix,
     orphanedCheckpointsFix,
     droppedHistoryChunksFix,
+    noisyStderrLogsFix,
   ];
 }

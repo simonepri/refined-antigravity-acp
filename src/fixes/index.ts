@@ -1,5 +1,7 @@
 import type { AcpFix } from "../core/types.js";
+import { missingLocalharnessFix } from "./missing-localharness/index.js";
 
+export * from "./missing-localharness/index.js";
 
 /**
  * Returns a list of all active fixes addressing the upstream issues documented in readme.md.
@@ -8,5 +10,6 @@ import type { AcpFix } from "../core/types.js";
  */
 export function createDefaultFixes(): AcpFix[] {
   return [
+    missingLocalharnessFix,
   ];
 }

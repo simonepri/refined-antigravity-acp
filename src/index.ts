@@ -3,12 +3,12 @@ import type { AcpConnector, AcpStream, AcpStreamMessage } from "./core/types.js"
 
 // Core generic transport and plumbing
 import { AcpPipeline } from "./core/pipeline.js";
-import { agyCommand } from "./core/command.js";
 import { defaultSpawnProcess } from "./core/transport.js";
 import { ProcessSupervisor } from "./core/supervisor.js";
 
 // Dedicated Fixes (Mapped 1:1 to Readme Table)
 import { createDefaultFixes } from "./fixes/index.js";
+import { resolveBinaryCommand } from "./fixes/missing-localharness/index.js";
 
 // Export all fixes and plumbing
 export * from "./fixes/index.js";
@@ -38,7 +38,7 @@ export function createAntigravityConnector(
   options?: AntigravityConnectorOptions,
 ): AcpConnector {
   return async (): Promise<AcpStream> => {
-    const [cmd, ...args] = agyCommand();
+    const [cmd, ...args] = await resolveBinaryCommand();
 
     const spawnFn = options?.spawnProcess ?? ((c, a) => defaultSpawnProcess(c, a));
     const initialChild = await spawnFn(cmd, args);

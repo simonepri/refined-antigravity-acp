@@ -52,10 +52,11 @@ export const HARNESS_LEAK_REGEX = new RegExp(
 );
 
 /**
- * Strips leaked Google harness and subagent internal tags from text in a single pass.
+ * Strips leaked Google harness and subagent internal tags from text using StreamSanitizer.
  */
 export function sanitizeText(text: string): string {
-  return text.replace(HARNESS_LEAK_REGEX, "").trim();
+  const sanitizer = new StreamSanitizer();
+  return (sanitizer.process(text) + sanitizer.flush()).trim();
 }
 
 const HARNESS_SET = new Set(HARNESS_TAGS.map((t) => t.toLowerCase().replace(/[-_]/g, "_")));
@@ -79,22 +80,82 @@ function isPossibleHarnessPrefix(str: string): boolean {
 const SYSTEM_MSG_INTRO = "The following is a <SYSTEM_MESSAGE> not actually sent by the user";
 const SYSTEM_MSG_INTRO_LOWER = SYSTEM_MSG_INTRO.toLowerCase();
 const SYSTEM_MSG_MATCH_RE =
-  /The following is a <SYSTEM_MESSAGE> not actually sent by the user[^\n]*\n?/i;
+  /The following is a <SYSTEM_MESSAGE> not actually sent by the user[^\n]*\n*/i;
 const FULL_TAG_RE = /^<\s*(\/?)\s*([a-zA-Z0-9_-]+)/;
 
+const BG_TASK_INTRO = "Got a message from a background task:";
+const BG_TASK_INTRO_LOWER = BG_TASK_INTRO.toLowerCase();
+const BG_SUBAGENT_INTRO = "Got a message from a subagent:";
+const BG_SUBAGENT_INTRO_LOWER = BG_SUBAGENT_INTRO.toLowerCase();
+
+const BG_TASK_HEADER_RE =
+  /(?:^|\n)[ \t]*Got a message from a (?:background task|subagent):\s*\n[ \t]*\[(?:[^\]]+\/)?(?:task|subagent)-[^\]]+\] Output:\s*\n*/i;
+
+const BG_TASK_FOOTER_RE =
+  /(?:Task (?:task|subagent)-\S+ (?:completed|finished|failed|was canceled)[^\n]*\n*|Task id "[^"]+" (?:completed|finished|failed|was canceled)[^\n]*\n*)/i;
+
+const BG_TASK_PARTIAL_HEADER_RE =
+  /(?:^|\n)[ \t]*Got a message from a (?:background task|subagent):\s*(?:\n[ \t]*\[[^\n]*)?$/i;
+
+function findLeadingWhitespaceStart(input: string, fromIdx: number): number {
+  let startIdx = fromIdx;
+  while (startIdx > 0 && /\s/.test(input[startIdx - 1] ?? "")) {
+    startIdx--;
+  }
+  return startIdx;
+}
+
+function isLineStartCandidate(input: string, idx: number, char: string): boolean {
+  if (input[idx]?.toLowerCase() !== char) return false;
+  if (idx === 0) return true;
+  let prev = idx - 1;
+  while (prev >= 0 && (input[prev] === " " || input[prev] === "\t")) {
+    prev--;
+  }
+  return prev < 0 || input[prev] === "\n" || input[prev] === "\r";
+}
+
+function isBannerCandidateStart(input: string, tIdx: number): boolean {
+  return isLineStartCandidate(input, tIdx, "t");
+}
+
 function checkBannerPartialPrefix(input: string): number | null {
-  const minPrefixLen = 15;
-  if (input.length < minPrefixLen) return null;
-  const maxLen = Math.min(input.length, SYSTEM_MSG_INTRO.length);
-  for (let len = maxLen; len >= minPrefixLen; len--) {
-    const startIdx = input.length - len;
-    if (input[startIdx]?.toLowerCase() !== "t") continue;
-    const candidate = input.slice(startIdx).toLowerCase();
+  for (let tIdx = 0; tIdx < input.length; tIdx++) {
+    if (!isBannerCandidateStart(input, tIdx)) continue;
+
+    const candidate = input.slice(tIdx).toLowerCase();
     if (SYSTEM_MSG_INTRO_LOWER.startsWith(candidate)) {
-      return startIdx;
+      return findLeadingWhitespaceStart(input, tIdx);
     }
   }
   return null;
+}
+
+function isBgTaskCandidateStart(input: string, gIdx: number): boolean {
+  return isLineStartCandidate(input, gIdx, "g");
+}
+
+function checkBgTaskPartialPrefix(input: string): number | null {
+  for (let gIdx = 0; gIdx < input.length; gIdx++) {
+    if (!isBgTaskCandidateStart(input, gIdx)) continue;
+
+    const candidate = input.slice(gIdx).toLowerCase();
+    if (
+      BG_TASK_INTRO_LOWER.startsWith(candidate) ||
+      BG_SUBAGENT_INTRO_LOWER.startsWith(candidate)
+    ) {
+      return findLeadingWhitespaceStart(input, gIdx);
+    }
+  }
+  return null;
+}
+
+function checkBgTaskPartialHeader(input: string): number | null {
+  const match = input.match(BG_TASK_PARTIAL_HEADER_RE);
+  if (match && match.index !== undefined) {
+    return findLeadingWhitespaceStart(input, match.index);
+  }
+  return checkBgTaskPartialPrefix(input);
 }
 
 const ANY_TAG_RE = /<\s*(\/?)\s*([a-zA-Z0-9_-]+)(?:\s+[^>]*)?>/i;
@@ -102,6 +163,7 @@ const ANY_TAG_RE = /<\s*(\/?)\s*([a-zA-Z0-9_-]+)(?:\s+[^>]*)?>/i;
 export class StreamSanitizer {
   private harnessStack: string[] = [];
   private buffer = "";
+  private inBackgroundTask = false;
 
   get inHarnessTag(): boolean {
     return this.harnessStack.length > 0;
@@ -110,6 +172,7 @@ export class StreamSanitizer {
   reset(): void {
     this.harnessStack = [];
     this.buffer = "";
+    this.inBackgroundTask = false;
   }
 
   process(chunk: string): string {
@@ -123,18 +186,20 @@ export class StreamSanitizer {
         continue;
       }
 
-      const sysResult = this.checkSystemMessage(input);
-      if (sysResult.matched) {
-        output += sysResult.outputPrefix;
-        input = sysResult.remainder;
+      if (this.inBackgroundTask) {
+        input = this.processInBackgroundTask(input);
         continue;
       }
 
-      const bannerPrefixIdx = checkBannerPartialPrefix(input);
-      if (bannerPrefixIdx !== null) {
-        output += input.slice(0, bannerPrefixIdx);
-        this.buffer = input.slice(bannerPrefixIdx);
+      const bannerCheck = this.checkBannerOrSystemMessage(input);
+      if (bannerCheck.buffered) {
+        output += bannerCheck.output;
         break;
+      }
+      if (bannerCheck.remainder !== input) {
+        output += bannerCheck.output;
+        input = bannerCheck.remainder;
+        continue;
       }
 
       const ltIdx = input.indexOf("<");
@@ -170,7 +235,7 @@ export class StreamSanitizer {
   flush(): string {
     const remaining = this.buffer;
     this.buffer = "";
-    if (this.inHarnessTag) {
+    if (this.inHarnessTag || this.inBackgroundTask) {
       return "";
     }
     if (!remaining) {
@@ -180,10 +245,61 @@ export class StreamSanitizer {
     if (clean !== "" && LOWER_HARNESS_TAGS.some((t) => t.startsWith(clean))) {
       return "";
     }
-    if (checkBannerPartialPrefix(remaining) !== null) {
+    const lower = remaining.toLowerCase().trim();
+    if (
+      lower.startsWith(SYSTEM_MSG_INTRO_LOWER) ||
+      lower.startsWith(BG_TASK_INTRO_LOWER) ||
+      lower.startsWith(BG_SUBAGENT_INTRO_LOWER)
+    ) {
       return "";
     }
     return remaining;
+  }
+
+  private processInBackgroundTask(input: string): string {
+    const footerMatch = input.match(BG_TASK_FOOTER_RE);
+    if (!footerMatch || footerMatch.index === undefined) {
+      this.buffer = input.slice(-100);
+      return "";
+    }
+    if (!footerMatch[0].endsWith("\n")) {
+      this.buffer = input.slice(footerMatch.index);
+      return "";
+    }
+    this.inBackgroundTask = false;
+    this.buffer = "";
+    return input.slice(footerMatch.index + footerMatch[0].length);
+  }
+
+  private checkBannerOrSystemMessage(input: string): {
+    output: string;
+    remainder: string;
+    buffered: boolean;
+  } {
+    const bgHeader = input.match(BG_TASK_HEADER_RE);
+    if (bgHeader && bgHeader.index !== undefined) {
+      this.inBackgroundTask = true;
+      return {
+        output: input.slice(0, bgHeader.index),
+        remainder: input.slice(bgHeader.index + bgHeader[0].length),
+        buffered: false,
+      };
+    }
+
+    const sysResult = this.checkSystemMessage(input);
+    if (sysResult.matched) {
+      return { output: sysResult.outputPrefix, remainder: sysResult.remainder, buffered: false };
+    }
+
+    const idx1 = checkBannerPartialPrefix(input);
+    const idx2 = checkBgTaskPartialHeader(input);
+    const bannerIdx = idx1 !== null && idx2 !== null ? Math.min(idx1, idx2) : (idx1 ?? idx2);
+    if (bannerIdx !== null) {
+      this.buffer = input.slice(bannerIdx);
+      return { output: input.slice(0, bannerIdx), remainder: "", buffered: true };
+    }
+
+    return { output: "", remainder: input, buffered: false };
   }
 
   private checkSystemMessage(input: string): {
@@ -198,22 +314,16 @@ export class StreamSanitizer {
     if (!sysMatch || sysMatch.index === undefined) {
       return { outputPrefix: "", remainder: input, matched: false };
     }
-    // If the matched banner line has no newline at the end and no tag immediately follows,
-    // buffer it because more text on this line could still be streaming in.
-    if (
-      !sysMatch[0].endsWith("\n") &&
-      !input.slice(sysMatch.index + sysMatch[0].length).startsWith("<")
-    ) {
+    const prefix = input.slice(0, sysMatch.index);
+    const outputPrefix = prefix.trim() === "" ? "" : prefix;
+    const matchEnd = sysMatch.index + sysMatch[0].length;
+    if (!sysMatch[0].endsWith("\n") && !input.slice(matchEnd).startsWith("<")) {
       this.buffer = input.slice(sysMatch.index);
-      return {
-        outputPrefix: input.slice(0, sysMatch.index),
-        remainder: "",
-        matched: true,
-      };
+      return { outputPrefix, remainder: "", matched: true };
     }
     return {
-      outputPrefix: input.slice(0, sysMatch.index),
-      remainder: input.slice(sysMatch.index + sysMatch[0].length),
+      outputPrefix,
+      remainder: input.slice(matchEnd),
       matched: true,
     };
   }

@@ -52,6 +52,29 @@ describe("StreamSanitizer", () => {
     output += sanitizer.flush();
     expect(output.trim()).toBe("Assistant message preserved.");
   });
+
+  it("handles synthetic system message block streamed in 1-char chunks", () => {
+    const sanitizer = new StreamSanitizer();
+    const raw =
+      "\n\nThe following is a <SYSTEM_MESSAGE> not actually sent by the user: context\n<SYSTEM_MESSAGE>task output</SYSTEM_MESSAGE>Clean message.";
+    let output = "";
+    for (const ch of raw) {
+      output += sanitizer.process(ch);
+    }
+    output += sanitizer.flush();
+    expect(output.trim()).toBe("Clean message.");
+  });
+
+  it("does not drop legitimate assistant text starting with 'The following'", () => {
+    const sanitizer = new StreamSanitizer();
+    const raw = "The following files were modified:\n- index.ts\n- index.test.ts";
+    let output = "";
+    for (let i = 0; i < raw.length; i += 5) {
+      output += sanitizer.process(raw.slice(i, i + 5));
+    }
+    output += sanitizer.flush();
+    expect(output).toBe(raw);
+  });
 });
 
 describe("streamSanitizationFix", () => {
@@ -155,5 +178,49 @@ describe("sanitizeText", () => {
     const { sanitizeText } = await import("./index.js");
     const input = "Visible before <context>trailing unfinished content";
     expect(sanitizeText(input)).toBe("Visible before");
+  });
+
+  it("strips leaked background task notification and raw stdout from assistant output", async () => {
+    const { sanitizeText } = await import("./index.js");
+    const raw = `Got a message from a background task:
+[2be29f6b-8054-4a2b-96a8-a6fc359b605e/task-492] Output:
+[INFO] Scanning for projects...
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------
+Task task-492 completed successfully with exit code 0.
+All 145 tests passed!`;
+    expect(sanitizeText(raw)).toBe("All 145 tests passed!");
+  });
+
+  it("suppresses streamed background task output without leaking raw logs", () => {
+    const sanitizer = new StreamSanitizer();
+    const raw = `Got a message from a background task:
+[2be29f6b-8054-4a2b-96a8-a6fc359b605e/task-492] Output:
+[INFO] Scanning for projects...
+[INFO] Building Floci 2.1.0
+Task task-492 completed successfully with exit code 0.
+`;
+    let output = "";
+    for (let i = 0; i < raw.length; i += 20) {
+      output += sanitizer.process(raw.slice(i, i + 20));
+    }
+    output += sanitizer.flush();
+    expect(output.trim()).toBe("");
+  });
+
+  it("suppresses streamed background task output while preserving subsequent assistant text", () => {
+    const sanitizer = new StreamSanitizer();
+    const raw = `Got a message from a background task:
+[2be29f6b-8054-4a2b-96a8-a6fc359b605e/task-492] Output:
+[INFO] Scanning for projects...
+Task task-492 completed successfully with exit code 0.
+All 145 tests passed!`;
+    let output = "";
+    for (const ch of raw) {
+      output += sanitizer.process(ch);
+    }
+    output += sanitizer.flush();
+    expect(output.trim()).toBe("All 145 tests passed!");
   });
 });

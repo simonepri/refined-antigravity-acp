@@ -10,6 +10,7 @@ import { ProcessSupervisor } from "./core/supervisor.js";
 import { createDefaultFixes } from "./fixes/index.js";
 import { resolveBinaryCommand } from "./fixes/missing-localharness/index.js";
 import { DEFAULT_PROMPT_RETRY_DELAY_MS } from "./fixes/active-turn-collision/index.js";
+import { type McpProxyPool, sharedMcpProxyPool } from "./fixes/stale-mcp-endpoints/index.js";
 
 // Export all fixes and plumbing
 export * from "./fixes/index.js";
@@ -37,7 +38,7 @@ export interface AntigravityConnectorOptions {
  * text sanitization, hang detection, and transparent process recycling.
  */
 export function createAntigravityConnector(
-  proxies?: any,
+  proxies: McpProxyPool = sharedMcpProxyPool,
   options?: AntigravityConnectorOptions,
 ): AcpConnector {
   return async (): Promise<AcpStream> => {

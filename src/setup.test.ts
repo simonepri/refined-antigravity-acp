@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { setupPaseo, setupZed, type ResolvedPaths } from "./setup.js";
+import { ensureSetupBinary, runSetup, setupPaseo, setupZed, type ResolvedPaths } from "./setup.js";
+import * as commandMod from "./core/command.js";
 
 describe("setup CLI module", () => {
   let tempDir: string;
@@ -107,5 +108,78 @@ describe("setup CLI module", () => {
     const settings = JSON.parse(fs.readFileSync(path.join(zedDir, "settings.json"), "utf8"));
     expect(settings.theme).toBe("One Dark");
     expect(settings.agent.profiles.antigravity.command).toBe("/custom/bin/node");
+  });
+
+  describe("ensureSetupBinary and runSetup", () => {
+    it("skips download when binary already exists", async () => {
+      const existingBin = path.join(tempDir, "agy_acp_server.par");
+      fs.writeFileSync(existingBin, "");
+      process.env.REFINED_AGY_ACP_BIN = existingBin;
+      try {
+        const result = await ensureSetupBinary();
+        expect(result).toBe(true);
+      } finally {
+        delete process.env.REFINED_AGY_ACP_BIN;
+      }
+    });
+
+    it("fails when binary is missing in non-interactive environment without autoAccept", async () => {
+      process.env.REFINED_AGY_ACP_BIN = path.join(tempDir, "nonexistent");
+      try {
+        const origTTY = process.stdin.isTTY;
+        process.stdin.isTTY = false;
+        try {
+          const result = await ensureSetupBinary();
+          expect(result).toBe(false);
+        } finally {
+          process.stdin.isTTY = origTTY;
+        }
+      } finally {
+        delete process.env.REFINED_AGY_ACP_BIN;
+      }
+    });
+
+    it("downloads binary when autoAccept is true", async () => {
+      process.env.REFINED_AGY_ACP_BIN = path.join(tempDir, "nonexistent");
+      const downloadSpy = vi
+        .spyOn(commandMod, "ensureAntigravityBinary")
+        .mockResolvedValue("/downloaded/bin");
+      try {
+        const result = await ensureSetupBinary({ autoAccept: true });
+        expect(result).toBe(true);
+        expect(downloadSpy).toHaveBeenCalled();
+      } finally {
+        delete process.env.REFINED_AGY_ACP_BIN;
+      }
+    });
+
+    it("runSetup aborts if binary setup fails", async () => {
+      process.env.REFINED_AGY_ACP_BIN = path.join(tempDir, "nonexistent");
+      try {
+        const origTTY = process.stdin.isTTY;
+        process.stdin.isTTY = false;
+        try {
+          const result = await runSetup("all");
+          expect(result).toBe(false);
+          expect(fs.existsSync(path.join(fakeHome, ".paseo", "config.json"))).toBe(false);
+        } finally {
+          process.stdin.isTTY = origTTY;
+        }
+      } finally {
+        delete process.env.REFINED_AGY_ACP_BIN;
+      }
+    });
+
+    it("runSetup configures targets when autoAccept is true", async () => {
+      process.env.REFINED_AGY_ACP_BIN = path.join(tempDir, "nonexistent");
+      vi.spyOn(commandMod, "ensureAntigravityBinary").mockResolvedValue("/downloaded/bin");
+      try {
+        const result = await runSetup("all", { autoAccept: true });
+        expect(result).toBe(true);
+        expect(fs.existsSync(path.join(fakeHome, ".paseo", "config.json"))).toBe(true);
+      } finally {
+        delete process.env.REFINED_AGY_ACP_BIN;
+      }
+    });
   });
 });

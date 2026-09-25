@@ -2,6 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { execFileSync, execSync } from "node:child_process";
+import readline from "node:readline/promises";
+import { agyCommand, ensureAntigravityBinary } from "./core/command.js";
 
 export interface ResolvedPaths {
   nodePath: string;
@@ -145,7 +147,79 @@ export function setupZed(paths: ResolvedPaths = resolvePaths()): boolean {
   return true;
 }
 
-export async function runSetup(target: "all" | "paseo" | "zed" = "all"): Promise<void> {
+export const GOOGLE_TERMS_URL = "https://antigravity.google/terms";
+
+export interface SetupOptions {
+  autoAccept?: boolean | undefined;
+}
+
+function findExistingBinary(): string | undefined {
+  try {
+    const [cmd] = agyCommand();
+    return fs.existsSync(cmd) ? cmd : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function promptTermsAcceptance(): Promise<boolean> {
+  if (!process.stdin.isTTY) {
+    console.error(
+      `\nGoogle Antigravity ACP binary was not found locally.\nBy downloading, you agree to the Google Antigravity Terms of Service:\n  ${GOOGLE_TERMS_URL}\n\nTo accept non-interactively, pass --yes: refined-antigravity-acp setup --yes\n`,
+    );
+    return false;
+  }
+
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+  try {
+    const answer = await rl.question(
+      `\nGoogle Antigravity ACP binary was not found locally.\nTo continue, the official binary must be downloaded from Google (dl.google.com).\n\nNotice: By downloading, you agree to the Google Antigravity Terms of Service:\n  ${GOOGLE_TERMS_URL}\n\nDo you accept the Google Antigravity Terms of Service? [y/N]: `,
+    );
+    const trimmed = answer.trim().toLowerCase();
+    return trimmed === "y" || trimmed === "yes";
+  } finally {
+    rl.close();
+  }
+}
+
+export async function ensureSetupBinary(options?: SetupOptions): Promise<boolean> {
+  const existingCmd = findExistingBinary();
+  if (existingCmd) {
+    console.log(`✓ Google Antigravity ACP binary found: ${existingCmd}`);
+    return true;
+  }
+
+  const accepted = options?.autoAccept ?? (await promptTermsAcceptance());
+  if (!accepted) {
+    console.log("\nSetup cancelled: Google Antigravity Terms of Service were not accepted.");
+    return false;
+  }
+
+  console.log(`\nNotice: By downloading, you agree to the Google Antigravity Terms of Service:`);
+  console.log(`  ${GOOGLE_TERMS_URL}`);
+  console.log("\n⬇ Downloading official Google Antigravity ACP binary...");
+  try {
+    const installed = await ensureAntigravityBinary();
+    console.log(`✓ Installed agy_acp_server to ${installed}\n`);
+    return true;
+  } catch (err) {
+    console.error(`✗ Failed to download Antigravity ACP binary:`, err);
+    return false;
+  }
+}
+
+export async function runSetup(
+  target: "all" | "paseo" | "zed" = "all",
+  options?: SetupOptions,
+): Promise<boolean> {
+  const binaryOk = await ensureSetupBinary(options);
+  if (!binaryOk) {
+    return false;
+  }
+
   const paths = resolvePaths();
 
   if (target === "paseo") {
@@ -156,4 +230,6 @@ export async function runSetup(target: "all" | "paseo" | "zed" = "all"): Promise
     setupPaseo(paths);
     setupZed(paths);
   }
+
+  return true;
 }

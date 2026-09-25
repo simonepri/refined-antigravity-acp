@@ -171,6 +171,9 @@ Run the one-line setup command to install and configure both Paseo and Zed:
 pnpm add -g @simonepri/refined-antigravity-acp && refined-antigravity-acp setup
 ```
 
+> [!NOTE]
+> **Google Terms of Service**: The setup command checks if Google's official `agy_acp_server` binary is installed. If missing, it displays a link to the [Google Antigravity Terms of Service](https://antigravity.google/terms) and prompts you to accept them before downloading the binary from Google's CDN (`dl.google.com`). For non-interactive setups or CI, pass `-y` (or `--yes`) to accept automatically: `refined-antigravity-acp setup --yes`.
+
 To configure a specific editor only:
 
 ```bash
@@ -363,6 +366,19 @@ Every fix pull request must follow this structure:
    ```bash
    pnpm run check && pnpm run build && pnpm test
    ```
+
+---
+
+## Terms of Service Notice
+
+Google's [Antigravity Additional Terms of Service](https://antigravity.google/terms) restrict using the Service in connection with unauthorized third-party software.
+
+Refined Antigravity ACP operates as a local proxy between ACP clients (Paseo, Zed) and Google's official `agy_acp_server` binary:
+
+- **What it does**: It supervises the local child process to recover from upstream deadlocks and crashes, repairs orphaned SQLite checkpoints, sanitizes streaming Markdown and diagrams, and injects workspace context and slash skills.
+- **What it does not do**: It does not make direct calls to Google cloud APIs, does not touch, store, or extract OAuth credentials or API keys, and does not bypass server-side quotas or rate limits.
+
+As with any third-party editor integration for official binaries, please review Google's Terms of Service to ensure your use complies with the policies applicable to your account.
 
 ---
 

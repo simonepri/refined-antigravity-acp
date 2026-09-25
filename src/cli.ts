@@ -2,30 +2,41 @@ import readline from "node:readline";
 import { createAntigravityConnector } from "./index.js";
 import { runSetup } from "./setup.js";
 
+function parseSetupTarget(args: string[]): "all" | "paseo" | "zed" {
+  if (args.includes("paseo") || args.includes("--paseo")) return "paseo";
+  if (args.includes("zed") || args.includes("--zed")) return "zed";
+  return "all";
+}
+
+function printHelp(): void {
+  console.log(`Refined Antigravity ACP - Hardened wrapper around Google's official Antigravity ACP binary.
+
+Usage:
+  refined-antigravity-acp               Start ACP server over stdio
+  refined-antigravity-acp setup         Download binary & configure Paseo and Zed
+  refined-antigravity-acp setup paseo   Configure Paseo (~/.paseo/config.json)
+  refined-antigravity-acp setup zed     Configure Zed Editor (settings.json)
+
+Options:
+  -y, --yes                             Accept Google Terms of Service non-interactively
+`);
+}
+
 async function handleCliArgs(args: string[]): Promise<boolean> {
   const firstArg = args[0]?.toLowerCase();
 
   if (firstArg === "setup") {
-    const target = args[1]?.toLowerCase();
-    if (target === "paseo" || args.includes("--paseo")) {
-      await runSetup("paseo");
-    } else if (target === "zed" || args.includes("--zed")) {
-      await runSetup("zed");
-    } else {
-      await runSetup("all");
+    const autoAccept = args.includes("--yes") || args.includes("-y");
+    const target = parseSetupTarget(args);
+    const success = await runSetup(target, { autoAccept });
+    if (!success) {
+      process.exit(1);
     }
     return true;
   }
 
   if (args.includes("--help") || args.includes("-h")) {
-    console.log(`Refined Antigravity ACP - Hardened wrapper around Google's official Antigravity ACP binary.
-
-Usage:
-  refined-antigravity-acp               Start ACP server over stdio
-  refined-antigravity-acp setup         Configure both Paseo and Zed
-  refined-antigravity-acp setup paseo   Configure Paseo (~/.paseo/config.json)
-  refined-antigravity-acp setup zed     Configure Zed Editor (settings.json)
-`);
+    printHelp();
     return true;
   }
 

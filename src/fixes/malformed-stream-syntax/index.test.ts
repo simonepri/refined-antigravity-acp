@@ -223,4 +223,60 @@ All 145 tests passed!`;
     output += sanitizer.flush();
     expect(output.trim()).toBe("All 145 tests passed!");
   });
+
+  it("strips task resumption banner and raw stdout from assistant output", async () => {
+    const { sanitizeText } = await import("./index.js");
+    const raw = `... Resuming execution after task execution ...
+Background task 'f1914418-7ae0-4f1d-bb7a-0187b25f5786/task-214' has finished.
+Exit code: 0
+Task output:
+[INFO] Scanning for projects...
+[INFO] ------------------------------------------------------------------------
+[INFO] BUILD SUCCESS
+[INFO] ------------------------------------------------------------------------`;
+    expect(sanitizeText(raw)).toBe("");
+  });
+
+  it("suppresses streamed task resumption banner and output in 1-char chunks", () => {
+    const sanitizer = new StreamSanitizer();
+    const raw = `... Resuming execution after task execution ...
+Background task 'f1914418-7ae0-4f1d-bb7a-0187b25f5786/task-214' has finished.
+Exit code: 0
+Task output:
+[INFO] Scanning for projects...
+[INFO] BUILD SUCCESS`;
+    let output = "";
+    for (const ch of raw) {
+      output += sanitizer.process(ch);
+    }
+    output += sanitizer.flush();
+    expect(output.trim()).toBe("");
+  });
+
+  it("preserves assistant text before task resumption banner", () => {
+    const sanitizer = new StreamSanitizer();
+    const raw = `Starting build now.
+... Resuming execution after task execution ...
+Background task 'f1914418-7ae0-4f1d-bb7a-0187b25f5786/task-214' has finished.
+Exit code: 0
+Task output:
+[INFO] Scanning for projects...`;
+    let output = "";
+    for (const ch of raw) {
+      output += sanitizer.process(ch);
+    }
+    output += sanitizer.flush();
+    expect(output.trim()).toBe("Starting build now.");
+  });
+
+  it("does not drop legitimate assistant text containing ellipsis", () => {
+    const sanitizer = new StreamSanitizer();
+    const raw = "...thinking about the implementation details...";
+    let output = "";
+    for (const ch of raw) {
+      output += sanitizer.process(ch);
+    }
+    output += sanitizer.flush();
+    expect(output).toBe(raw);
+  });
 });

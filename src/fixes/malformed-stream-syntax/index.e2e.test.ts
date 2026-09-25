@@ -128,7 +128,25 @@ Everything is built and ready!`;
 
     expect(assistantText).not.toContain("Got a message from a background task:");
     expect(assistantText).not.toContain("Got a message from a subagent:");
+    expect(assistantText).not.toContain("... Resuming execution after task execution ...");
+    expect(assistantText).not.toMatch(/Background task '[^']+' has finished\./i);
     expect(assistantText).not.toMatch(/\[(?:task|subagent)-\S+\] Output:/i);
     expect(assistantText.trim().length).toBeGreaterThan(0);
+  });
+
+  it("problem: raw agy stream leaks task resumption banner and task output into assistant output", () => {
+    const rawOutput = `... Resuming execution after task execution ...
+Background task 'f1914418-7ae0-4f1d-bb7a-0187b25f5786/task-214' has finished.
+Exit code: 0
+Task output:
+[INFO] Scanning for projects...
+[INFO] BUILD SUCCESS`;
+
+    // Without sanitization, raw background task resume banner and logs are present
+    expect(rawOutput).toContain("... Resuming execution after task execution ...");
+    expect(rawOutput).toContain(
+      "Background task 'f1914418-7ae0-4f1d-bb7a-0187b25f5786/task-214' has finished.",
+    );
+    expect(rawOutput).toContain("[INFO] Scanning for projects...");
   });
 });

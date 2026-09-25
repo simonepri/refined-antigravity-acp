@@ -87,15 +87,27 @@ const BG_TASK_INTRO = "Got a message from a background task:";
 const BG_TASK_INTRO_LOWER = BG_TASK_INTRO.toLowerCase();
 const BG_SUBAGENT_INTRO = "Got a message from a subagent:";
 const BG_SUBAGENT_INTRO_LOWER = BG_SUBAGENT_INTRO.toLowerCase();
+const BG_TASK_RESUME_INTRO = "... Resuming execution after task execution ...";
+const BG_TASK_RESUME_INTRO_LOWER = BG_TASK_RESUME_INTRO.toLowerCase();
+const BG_SUBAGENT_RESUME_INTRO = "... Resuming execution after subagent execution ...";
+const BG_SUBAGENT_RESUME_INTRO_LOWER = BG_SUBAGENT_RESUME_INTRO.toLowerCase();
+const BG_TASK_RESUME_ELLIPSIS_INTRO = "… Resuming execution after task execution …";
+const BG_TASK_RESUME_ELLIPSIS_INTRO_LOWER = BG_TASK_RESUME_ELLIPSIS_INTRO.toLowerCase();
+const BG_SUBAGENT_RESUME_ELLIPSIS_INTRO = "… Resuming execution after subagent execution …";
+const BG_SUBAGENT_RESUME_ELLIPSIS_INTRO_LOWER = BG_SUBAGENT_RESUME_ELLIPSIS_INTRO.toLowerCase();
+const BG_TASK_FINISHED_INTRO = "Background task '";
+const BG_TASK_FINISHED_INTRO_LOWER = BG_TASK_FINISHED_INTRO.toLowerCase();
+const BG_SUBAGENT_FINISHED_INTRO = "Subagent '";
+const BG_SUBAGENT_FINISHED_INTRO_LOWER = BG_SUBAGENT_FINISHED_INTRO.toLowerCase();
 
 const BG_TASK_HEADER_RE =
-  /(?:^|\n)[ \t]*Got a message from a (?:background task|subagent):\s*\n[ \t]*\[(?:[^\]]+\/)?(?:task|subagent)-[^\]]+\] Output:\s*\n*/i;
+  /(?:^|\n)[ \t]*(?:Got a message from a (?:background task|subagent):\s*\n[ \t]*\[(?:[^\]]+\/)?(?:task|subagent)-[^\]]+\] Output:|(?:(?:\.\.\.|\u2026)\s*Resuming execution after (?:task|subagent) execution\s*(?:\.\.\.|\u2026)\s*\n[ \t]*)?(?:Background task|Subagent)\s*'[^']+'\s*has finished\.\s*\n[ \t]*Exit code:\s*\S+\s*\n[ \t]*(?:Task|Subagent) output:|(?:\.\.\.|\u2026)\s*Resuming execution after (?:task|subagent) execution\s*(?:\.\.\.|\u2026))\s*\n*/i;
 
 const BG_TASK_FOOTER_RE =
   /(?:Task (?:task|subagent)-\S+ (?:completed|finished|failed|was canceled)[^\n]*\n*|Task id "[^"]+" (?:completed|finished|failed|was canceled)[^\n]*\n*)/i;
 
 const BG_TASK_PARTIAL_HEADER_RE =
-  /(?:^|\n)[ \t]*Got a message from a (?:background task|subagent):\s*(?:\n[ \t]*\[[^\n]*)?$/i;
+  /(?:^|\n)[ \t]*(?:Got a message from a (?:background task|subagent):\s*(?:\n[ \t]*\[[^\n]*)?|(?:\.\.\.|\u2026)\s*Resuming execution after (?:task|subagent) execution\s*(?:\.\.\.|\u2026)?(?:\n[ \t]*(?:Background task|Subagent)\s*(?:'[^'\n]*)?(?:'\s*has finished\.)?)?(?:\n[ \t]*Exit code:[^\n]*)?(?:\n[ \t]*(?:Task|Subagent) output:[^\n]*)?|(?:Background task|Subagent)\s*(?:'[^'\n]*)?(?:'\s*has finished\.)?(?:\n[ \t]*Exit code:[^\n]*)?(?:\n[ \t]*(?:Task|Subagent) output:[^\n]*)?)$/i;
 
 function findLeadingWhitespaceStart(input: string, fromIdx: number): number {
   let startIdx = fromIdx;
@@ -106,7 +118,7 @@ function findLeadingWhitespaceStart(input: string, fromIdx: number): number {
 }
 
 function isLineStartCandidate(input: string, idx: number, char: string): boolean {
-  if (input[idx]?.toLowerCase() !== char) return false;
+  if (input[idx]?.toLowerCase() !== char.toLowerCase()) return false;
   if (idx === 0) return true;
   let prev = idx - 1;
   while (prev >= 0 && (input[prev] === " " || input[prev] === "\t")) {
@@ -131,20 +143,34 @@ function checkBannerPartialPrefix(input: string): number | null {
   return null;
 }
 
-function isBgTaskCandidateStart(input: string, gIdx: number): boolean {
-  return isLineStartCandidate(input, gIdx, "g");
+const BG_TASK_INTROS_LOWER = [
+  BG_TASK_INTRO_LOWER,
+  BG_SUBAGENT_INTRO_LOWER,
+  BG_TASK_RESUME_INTRO_LOWER,
+  BG_SUBAGENT_RESUME_INTRO_LOWER,
+  BG_TASK_RESUME_ELLIPSIS_INTRO_LOWER,
+  BG_SUBAGENT_RESUME_ELLIPSIS_INTRO_LOWER,
+  BG_TASK_FINISHED_INTRO_LOWER,
+  BG_SUBAGENT_FINISHED_INTRO_LOWER,
+] as const;
+
+function isBgTaskCandidateStart(input: string, idx: number): boolean {
+  const ch = input[idx];
+  if (!ch) return false;
+  const lower = ch.toLowerCase();
+  if (lower === "g" || lower === "b" || lower === "s" || ch === "." || ch === "\u2026") {
+    return isLineStartCandidate(input, idx, ch);
+  }
+  return false;
 }
 
 function checkBgTaskPartialPrefix(input: string): number | null {
-  for (let gIdx = 0; gIdx < input.length; gIdx++) {
-    if (!isBgTaskCandidateStart(input, gIdx)) continue;
+  for (let idx = 0; idx < input.length; idx++) {
+    if (!isBgTaskCandidateStart(input, idx)) continue;
 
-    const candidate = input.slice(gIdx).toLowerCase();
-    if (
-      BG_TASK_INTRO_LOWER.startsWith(candidate) ||
-      BG_SUBAGENT_INTRO_LOWER.startsWith(candidate)
-    ) {
-      return findLeadingWhitespaceStart(input, gIdx);
+    const candidate = input.slice(idx).toLowerCase();
+    if (BG_TASK_INTROS_LOWER.some((intro) => intro.startsWith(candidate))) {
+      return findLeadingWhitespaceStart(input, idx);
     }
   }
   return null;
@@ -235,21 +261,19 @@ export class StreamSanitizer {
   flush(): string {
     const remaining = this.buffer;
     this.buffer = "";
-    if (this.inHarnessTag || this.inBackgroundTask) {
+    if (this.inHarnessTag || this.inBackgroundTask || !remaining) {
       return "";
     }
-    if (!remaining) {
-      return "";
-    }
-    const clean = normalizeTagName(remaining.replace(/^<\/?/, ""));
-    if (clean !== "" && LOWER_HARNESS_TAGS.some((t) => t.startsWith(clean))) {
-      return "";
+    if (remaining.startsWith("<")) {
+      const clean = normalizeTagName(remaining.replace(/^<\/?/, ""));
+      if (clean !== "" && LOWER_HARNESS_TAGS.some((t) => t.startsWith(clean))) {
+        return "";
+      }
     }
     const lower = remaining.toLowerCase().trim();
     if (
       lower.startsWith(SYSTEM_MSG_INTRO_LOWER) ||
-      lower.startsWith(BG_TASK_INTRO_LOWER) ||
-      lower.startsWith(BG_SUBAGENT_INTRO_LOWER)
+      BG_TASK_INTROS_LOWER.some((intro) => lower.startsWith(intro))
     ) {
       return "";
     }

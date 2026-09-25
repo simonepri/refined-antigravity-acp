@@ -25,6 +25,14 @@ describe("isCancellationText", () => {
     ).toBe(true);
   });
 
+  it("detects concurrent receive_steps lost connection error text", () => {
+    expect(
+      isCancellationText(
+        "Agent connection was lost and could not be re-established: Concurrent receive_steps() calls are not supported on this connection.",
+      ),
+    ).toBe(true);
+  });
+
   it("preserves legitimate assistant messages that discuss cancellation topics", () => {
     expect(isCancellationText("Here is the explanation for context cancellation in Go.")).toBe(
       false,

@@ -25,6 +25,9 @@ import { extractSessionId, getFixData, setFixData } from "../../core/session-cac
 export const CANCELLATION_ERROR_REGEX =
   /^(?:context\s+canceled)?\s*The\s+request\s+was\s+cancelled\s+by\s+the\s+client\.?$/i;
 
+export const CONCURRENT_RECEIVE_STEPS_REGEX =
+  /^Agent connection was lost and could not be re-established:\s*Concurrent receive_steps\(\) calls are not supported on this connection\.?$/i;
+
 export const CANCEL_PROMPT_SETTLED_KEY = "cancelPromptSettled";
 
 export function isCancellationText(text: string): boolean {
@@ -33,7 +36,8 @@ export function isCancellationText(text: string): boolean {
   return (
     trimmed === "context canceled" ||
     trimmed === "The request was cancelled by the client." ||
-    CANCELLATION_ERROR_REGEX.test(trimmed)
+    CANCELLATION_ERROR_REGEX.test(trimmed) ||
+    CONCURRENT_RECEIVE_STEPS_REGEX.test(trimmed)
   );
 }
 

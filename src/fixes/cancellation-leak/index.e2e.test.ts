@@ -41,6 +41,26 @@ describe("cancellation-leak e2e", () => {
     expect(res).toEqual([]);
   });
 
+  it("solution: interruptionCleanupFix drops Concurrent receive_steps error chunks", () => {
+    const errorChunkMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s1",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: {
+            type: "text",
+            text: "Agent connection was lost and could not be re-established: Concurrent receive_steps() calls are not supported on this connection.",
+          },
+        },
+      },
+    } as unknown as AcpStreamMessage;
+
+    const res = interruptionCleanupFix.onInbound?.(errorChunkMsg, createMockContext());
+    expect(res).toEqual([]);
+  });
+
   it("problem: raw agy causes turn collision error or fails when subsequent prompt is sent immediately after session/cancel", async () => {
     const client = await spawnRawAgy();
     activeClients.push(client);

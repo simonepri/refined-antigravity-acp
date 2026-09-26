@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { execFileSync, execSync } from "node:child_process";
+import childProcess from "node:child_process";
 import readline from "node:readline/promises";
 import { agyCommand, ensureAntigravityBinary } from "./core/command.js";
 
@@ -27,7 +27,9 @@ export function resolvePaths(): ResolvedPaths {
   // 2. Check which refined-antigravity-acp
   if (!cliPath) {
     try {
-      const found = execSync("which refined-antigravity-acp", { encoding: "utf8" }).trim();
+      const found = childProcess
+        .execSync("which refined-antigravity-acp", { encoding: "utf8" })
+        .trim();
       if (found && fs.existsSync(found)) {
         cliPath = fs.realpathSync(found);
       }
@@ -64,7 +66,7 @@ function getNestedRecord(obj: Record<string, unknown>, key: string): Record<stri
 
 function tryRestartPaseoDaemon(): void {
   try {
-    execFileSync("paseo", ["daemon", "restart"], { stdio: "ignore" });
+    childProcess.execFileSync("paseo", ["daemon", "restart"], { stdio: "ignore" });
     console.log("✓ Restarted Paseo daemon");
   } catch {
     // Paseo daemon may not be active or paseo CLI not in PATH
@@ -151,6 +153,7 @@ export const GOOGLE_TERMS_URL = "https://antigravity.google/terms";
 
 export interface SetupOptions {
   autoAccept?: boolean | undefined;
+  restartDaemon?: boolean | undefined;
 }
 
 function findExistingBinary(): string | undefined {
@@ -221,13 +224,14 @@ export async function runSetup(
   }
 
   const paths = resolvePaths();
+  const restartDaemon = options?.restartDaemon ?? true;
 
   if (target === "paseo") {
-    setupPaseo(paths);
+    setupPaseo(paths, restartDaemon);
   } else if (target === "zed") {
     setupZed(paths);
   } else {
-    setupPaseo(paths);
+    setupPaseo(paths, restartDaemon);
     setupZed(paths);
   }
 

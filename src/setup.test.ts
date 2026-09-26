@@ -1,3 +1,4 @@
+import childProcess from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -14,6 +15,8 @@ describe("setup CLI module", () => {
     fakeHome = path.join(tempDir, "home");
     fs.mkdirSync(fakeHome, { recursive: true });
     vi.spyOn(os, "homedir").mockReturnValue(fakeHome);
+    vi.spyOn(childProcess, "execFileSync").mockReturnValue(Buffer.from(""));
+    vi.spyOn(childProcess, "execSync").mockReturnValue(Buffer.from(""));
   });
 
   afterEach(() => {
@@ -174,7 +177,7 @@ describe("setup CLI module", () => {
       process.env.REFINED_AGY_ACP_BIN = path.join(tempDir, "nonexistent");
       vi.spyOn(commandMod, "ensureAntigravityBinary").mockResolvedValue("/downloaded/bin");
       try {
-        const result = await runSetup("all", { autoAccept: true });
+        const result = await runSetup("all", { autoAccept: true, restartDaemon: false });
         expect(result).toBe(true);
         expect(fs.existsSync(path.join(fakeHome, ".paseo", "config.json"))).toBe(true);
       } finally {

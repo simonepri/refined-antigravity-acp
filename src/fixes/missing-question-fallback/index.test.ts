@@ -1,116 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { questionOptionsFix, ensureOtherOption, QUESTION_OPTIONS_INSTRUCTIONS } from "./index.js";
+import { questionOptionsFix, createQuestionOptionsFix } from "./index.js";
 import type { AcpStreamMessage } from "../../core/types.js";
 import { createMockContext } from "../../test-utils/e2e-harness.js";
 
-interface QuestionUpdatePayload {
-  update?: {
-    rawInput?: {
-      questions?: Array<{ options?: string[] }>;
-    };
-  };
-}
-
 describe("missing-question-fallback fix", () => {
   const dummyContext = createMockContext();
-
-  it("provides system instructions requiring an Other option in multiple choice questions", () => {
-    const instructions = questionOptionsFix.getSystemInstructions?.();
-    expect(instructions).toEqual(QUESTION_OPTIONS_INSTRUCTIONS);
-    expect(instructions?.[0]).toContain("'Other' option");
-  });
-
-  it("appends an Other option to questions lacking custom write-in choices in ask_question tool calls", () => {
-    const toolCallMsg: AcpStreamMessage = {
-      jsonrpc: "2.0",
-      method: "session/update",
-      params: {
-        sessionId: "s1",
-        update: {
-          sessionUpdate: "tool_call",
-          toolCallId: "call_q1",
-          name: "ask_question",
-          rawInput: {
-            questions: [
-              {
-                question: "Which database would you prefer to use?",
-                options: ["PostgreSQL", "SQLite", "MongoDB"],
-                is_multi_select: false,
-              },
-            ],
-          },
-        },
-      },
-    } as unknown as AcpStreamMessage;
-
-    const res = questionOptionsFix.onInbound?.(toolCallMsg, dummyContext) as AcpStreamMessage[];
-    expect(res).toHaveLength(1);
-
-    const firstMsg = res[0] as unknown as { params?: QuestionUpdatePayload };
-    const questions = firstMsg.params?.update?.rawInput?.questions;
-    expect(questions?.[0]?.options).toEqual(["PostgreSQL", "SQLite", "MongoDB", "Other"]);
-  });
-
-  it("preserves existing options when an Other or None option is already present", () => {
-    const toolCallMsg: AcpStreamMessage = {
-      jsonrpc: "2.0",
-      method: "session/update",
-      params: {
-        sessionId: "s1",
-        update: {
-          sessionUpdate: "tool_call",
-          toolCallId: "call_q2",
-          name: "ask_question",
-          rawInput: {
-            questions: [
-              {
-                question: "Do you want to proceed?",
-                options: ["Yes", "No", "None of the above"],
-              },
-            ],
-          },
-        },
-      },
-    } as unknown as AcpStreamMessage;
-
-    const res = questionOptionsFix.onInbound?.(toolCallMsg, dummyContext) as AcpStreamMessage[];
-    const firstMsg = res[0] as unknown as { params?: QuestionUpdatePayload };
-    const questions = firstMsg.params?.update?.rawInput?.questions;
-    expect(questions?.[0]?.options).toEqual(["Yes", "No", "None of the above"]);
-  });
-
-  it("handles serialized JSON string arguments in tool call updates", () => {
-    const rawInputJson = JSON.stringify({
-      questions: [
-        {
-          question: "Select deployment strategy",
-          options: ["Blue-Green", "Canary", "Rolling"],
-        },
-      ],
-    });
-
-    const toolCallMsg: AcpStreamMessage = {
-      jsonrpc: "2.0",
-      method: "session/update",
-      params: {
-        sessionId: "s1",
-        update: {
-          sessionUpdate: "tool_call",
-          toolCallId: "call_q3",
-          name: "ask_question",
-          rawInput: rawInputJson,
-        },
-      },
-    } as unknown as AcpStreamMessage;
-
-    const res = questionOptionsFix.onInbound?.(toolCallMsg, dummyContext) as AcpStreamMessage[];
-    const firstMsg = res[0] as unknown as { params?: { update?: { rawInput?: string } } };
-    const rawString = firstMsg.params?.update?.rawInput;
-    expect(rawString).toBeDefined();
-
-    const parsed = JSON.parse(rawString!) as { questions?: Array<{ options?: string[] }> };
-    expect(parsed.questions?.[0]?.options).toEqual(["Blue-Green", "Canary", "Rolling", "Other"]);
-  });
 
   it("passes non-question tool calls and unrelated messages through unmodified", () => {
     const commandMsg: AcpStreamMessage = {
@@ -130,16 +24,174 @@ describe("missing-question-fallback fix", () => {
     const res = questionOptionsFix.onInbound?.(commandMsg, dummyContext) as AcpStreamMessage[];
     expect(res).toEqual([commandMsg]);
   });
-});
 
-describe("ensureOtherOption", () => {
-  it("returns modified false when raw input is not an object or questions is not an array", () => {
-    expect(ensureOtherOption(null)).toEqual({ modified: false, result: null });
-    expect(ensureOtherOption(undefined)).toEqual({ modified: false, result: undefined });
-    expect(ensureOtherOption("invalid json string")).toEqual({
-      modified: false,
-      result: "invalid json string",
+  it("unblocks pending request_permission question when user sends a chat prompt", async () => {
+    const fix = createQuestionOptionsFix();
+    const writtenToChild: AcpStreamMessage[] = [];
+    const forwardedInbound: AcpStreamMessage[] = [];
+
+    const mockContext = {
+      ...createMockContext(),
+      writeToChild: async (msg: AcpStreamMessage) => {
+        writtenToChild.push(msg);
+      },
+      forwardInbound: (msg: AcpStreamMessage) => {
+        forwardedInbound.push(msg);
+      },
+    };
+
+    const questionPermissionMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: "perm_req_1",
+      method: "session/request_permission",
+      params: {
+        sessionId: "s1",
+        toolCall: {
+          toolCallId: "call_q_pending",
+          title: "Select deployment option",
+          status: "pending",
+        },
+        options: [
+          { optionId: "1", name: "Option 1" },
+          { optionId: "2", name: "Option 2" },
+        ],
+      },
+    } as unknown as AcpStreamMessage;
+
+    // Inbound: agy asks user a question via request_permission
+    fix.onInbound?.(questionPermissionMsg, mockContext);
+
+    // User ignores options and types their own answer / redirection in the chat
+    const userPromptMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 201,
+      method: "session/prompt",
+      params: {
+        sessionId: "s1",
+        prompt: [{ type: "text", text: "Neither option, do this instead" }],
+      },
+    } as unknown as AcpStreamMessage;
+
+    await fix.onOutbound?.(userPromptMsg, mockContext);
+
+    // Child must receive cancellation for the pending question to unblock upstream turn
+    expect(writtenToChild).toHaveLength(1);
+    expect(writtenToChild[0]).toEqual({
+      jsonrpc: "2.0",
+      id: "perm_req_1",
+      result: { outcome: { outcome: "cancelled" } },
     });
-    expect(ensureOtherOption({})).toEqual({ modified: false, result: {} });
+
+    // Editor UI must receive completion for the question tool call to close spinner
+    expect(forwardedInbound).toHaveLength(1);
+    expect(forwardedInbound[0]).toEqual({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s1",
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call_q_pending",
+          status: "completed",
+        },
+      },
+    });
+  });
+
+  it("unblocks pending question when user sends session/cancel", async () => {
+    const fix = createQuestionOptionsFix();
+    const writtenToChild: AcpStreamMessage[] = [];
+
+    const mockContext = {
+      ...createMockContext(),
+      writeToChild: async (msg: AcpStreamMessage) => {
+        writtenToChild.push(msg);
+      },
+    };
+
+    const questionPermissionMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: "perm_req_cancel",
+      method: "session/request_permission",
+      params: {
+        sessionId: "s1",
+        toolCall: {
+          toolCallId: "call_q_cancel",
+          title: "Select branch strategy",
+          status: "pending",
+        },
+        options: [{ optionId: "1", name: "Rebase" }],
+      },
+    } as unknown as AcpStreamMessage;
+
+    fix.onInbound?.(questionPermissionMsg, mockContext);
+
+    const cancelMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 202,
+      method: "session/cancel",
+      params: { sessionId: "s1" },
+    } as unknown as AcpStreamMessage;
+
+    await fix.onOutbound?.(cancelMsg, mockContext);
+
+    expect(writtenToChild).toHaveLength(1);
+    expect(writtenToChild[0]).toEqual({
+      jsonrpc: "2.0",
+      id: "perm_req_cancel",
+      result: { outcome: { outcome: "cancelled" } },
+    });
+  });
+
+  it("clears pending question when user selects an option directly", async () => {
+    const fix = createQuestionOptionsFix();
+    const writtenToChild: AcpStreamMessage[] = [];
+
+    const mockContext = {
+      ...createMockContext(),
+      writeToChild: async (msg: AcpStreamMessage) => {
+        writtenToChild.push(msg);
+      },
+    };
+
+    const questionPermissionMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 999,
+      method: "session/request_permission",
+      params: {
+        sessionId: "s1",
+        toolCall: {
+          toolCallId: "call_q_direct",
+          title: "Select an option",
+          status: "pending",
+        },
+        options: [{ optionId: "opt_1", name: "First" }],
+      },
+    } as unknown as AcpStreamMessage;
+
+    fix.onInbound?.(questionPermissionMsg, mockContext);
+
+    // User selects option directly via permission response
+    const permissionResponseMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 999,
+      result: { outcome: { outcome: "selected", optionId: "opt_1" } },
+    } as unknown as AcpStreamMessage;
+
+    await fix.onOutbound?.(permissionResponseMsg, mockContext);
+
+    // Subsequent prompt does NOT synthesize an extra cancel since question was already answered
+    const nextPromptMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 1000,
+      method: "session/prompt",
+      params: {
+        sessionId: "s1",
+        prompt: [{ type: "text", text: "Proceed" }],
+      },
+    } as unknown as AcpStreamMessage;
+
+    await fix.onOutbound?.(nextPromptMsg, mockContext);
+    expect(writtenToChild).toHaveLength(0);
   });
 });

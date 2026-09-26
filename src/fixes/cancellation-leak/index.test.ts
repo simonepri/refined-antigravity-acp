@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { AcpStreamMessage } from "../../core/types.js";
 import { createMockContext } from "../../test-utils/e2e-harness.js";
-import { extractMessageChunkText, interruptionCleanupFix, isCancellationText } from "./index.js";
+import {
+  createCancellationLeakFix,
+  extractMessageChunkText,
+  interruptionCleanupFix,
+  isCancellationText,
+} from "./index.js";
 
 describe("isCancellationText", () => {
   it("detects concatenated upstream cancellation error text", () => {
@@ -172,8 +177,53 @@ describe("interruptionCleanupFix", () => {
     expect(res).toEqual([normalMsg]);
   });
 
-  it("synthesizes immediate cancelled prompt response when client cancels in-flight turn", () => {
-    const fix = interruptionCleanupFix;
+  it("forwards upstream cancelled prompt response to client and unblocks next prompt", async () => {
+    const fix = createCancellationLeakFix();
+    const mockCtx = createMockContext();
+
+    const promptMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 201,
+      method: "session/prompt",
+      params: { sessionId: "sess-cancel-test", prompt: [{ type: "text", text: "slow tool" }] },
+    } as unknown as AcpStreamMessage;
+
+    await fix.onOutbound?.(promptMsg, mockCtx);
+
+    const cancelMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: "session/cancel",
+      params: { sessionId: "sess-cancel-test" },
+    } as unknown as AcpStreamMessage;
+
+    await fix.onOutbound?.(cancelMsg, mockCtx);
+
+    // Stream update chunk arriving during cancel -> dropped
+    const cancelChunk: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "sess-cancel-test",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "tool output during cancel" },
+        },
+      },
+    } as unknown as AcpStreamMessage;
+    expect(fix.onInbound?.(cancelChunk, mockCtx)).toEqual([]);
+
+    const upstreamCancelResponse: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 201,
+      result: { stopReason: "cancelled" },
+    } as unknown as AcpStreamMessage;
+
+    const res = fix.onInbound?.(upstreamCancelResponse, mockCtx);
+    expect(res).toEqual([upstreamCancelResponse]);
+  });
+
+  it("synthesizes fallback cancelled prompt response when upstream times out on cancel", async () => {
+    const fix = createCancellationLeakFix({ timeoutMs: 50 });
     let forwardedInbound: AcpStreamMessage | null = null;
     const mockCtx = {
       ...createMockContext(),
@@ -184,73 +234,123 @@ describe("interruptionCleanupFix", () => {
 
     const promptMsg: AcpStreamMessage = {
       jsonrpc: "2.0",
-      id: 201,
+      id: 202,
       method: "session/prompt",
-      params: { sessionId: "sess-cancel-test", prompt: [{ type: "text", text: "slow tool" }] },
+      params: { sessionId: "sess-timeout-test", prompt: [{ type: "text", text: "slow tool" }] },
     } as unknown as AcpStreamMessage;
 
-    fix.onOutbound?.(promptMsg, mockCtx);
+    await fix.onOutbound?.(promptMsg, mockCtx);
 
     const cancelMsg: AcpStreamMessage = {
       jsonrpc: "2.0",
       method: "session/cancel",
-      params: { sessionId: "sess-cancel-test" },
+      params: { sessionId: "sess-timeout-test" },
     } as unknown as AcpStreamMessage;
 
-    fix.onOutbound?.(cancelMsg, mockCtx);
+    await fix.onOutbound?.(cancelMsg, mockCtx);
+
+    // Wait for timeout fallback
+    await new Promise((resolve) => setTimeout(resolve, 60));
 
     expect(forwardedInbound).toEqual({
       jsonrpc: "2.0",
-      id: 201,
+      id: 202,
       result: { stopReason: "cancelled" },
     });
-  });
 
-  it("drops late upstream response and late stream update chunks for cancelled turn", () => {
-    const fix = interruptionCleanupFix;
-    const mockCtx = createMockContext();
-
-    const promptMsg: AcpStreamMessage = {
-      jsonrpc: "2.0",
-      id: 202,
-      method: "session/prompt",
-      params: { sessionId: "sess-drop-test", prompt: [{ type: "text", text: "slow tool" }] },
-    } as unknown as AcpStreamMessage;
-
-    fix.onOutbound?.(promptMsg, mockCtx);
-
-    const cancelMsg: AcpStreamMessage = {
-      jsonrpc: "2.0",
-      method: "session/cancel",
-      params: { sessionId: "sess-drop-test" },
-    } as unknown as AcpStreamMessage;
-
-    fix.onOutbound?.(cancelMsg, mockCtx);
-
-    // Late stream update chunk arrives from upstream -> dropped
-    const lateChunk: AcpStreamMessage = {
-      jsonrpc: "2.0",
-      method: "session/update",
-      params: {
-        sessionId: "sess-drop-test",
-        update: {
-          sessionUpdate: "agent_message_chunk",
-          content: { type: "text", text: "tool output after cancel" },
-        },
-      },
-    } as unknown as AcpStreamMessage;
-
-    const chunkRes = fix.onInbound?.(lateChunk, mockCtx);
-    expect(chunkRes).toEqual([]);
-
-    // Late prompt response arrives from upstream -> dropped
+    // Late response arriving after fallback is dropped
     const lateResponse: AcpStreamMessage = {
       jsonrpc: "2.0",
       id: 202,
       result: { stopReason: "cancelled" },
     } as unknown as AcpStreamMessage;
+    const lateRes = fix.onInbound?.(lateResponse, mockCtx);
+    expect(lateRes).toEqual([]);
+  });
 
-    const respRes = fix.onInbound?.(lateResponse, mockCtx);
-    expect(respRes).toEqual([]);
+  it("delays subsequent outbound prompt until in-flight cancellation has settled", async () => {
+    const fix = createCancellationLeakFix();
+    const mockCtx = createMockContext();
+
+    const prompt1: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 204,
+      method: "session/prompt",
+      params: { sessionId: "sess-queue-test", prompt: [{ type: "text", text: "cmd 1" }] },
+    } as unknown as AcpStreamMessage;
+    await fix.onOutbound?.(prompt1, mockCtx);
+
+    const cancelMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: "session/cancel",
+      params: { sessionId: "sess-queue-test" },
+    } as unknown as AcpStreamMessage;
+    await fix.onOutbound?.(cancelMsg, mockCtx);
+
+    const prompt2: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 205,
+      method: "session/prompt",
+      params: { sessionId: "sess-queue-test", prompt: [{ type: "text", text: "cmd 2" }] },
+    } as unknown as AcpStreamMessage;
+
+    let p2Settled = false;
+    const p2Promise = Promise.resolve(fix.onOutbound?.(prompt2, mockCtx)).then(() => {
+      p2Settled = true;
+      return undefined;
+    });
+
+    // Microtask wait: prompt2 must be awaiting cancellation
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(p2Settled).toBe(false);
+
+    // Upstream settles prompt 1
+    const p1Response: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 204,
+      result: { stopReason: "cancelled" },
+    } as unknown as AcpStreamMessage;
+    fix.onInbound?.(p1Response, mockCtx);
+
+    await p2Promise;
+    expect(p2Settled).toBe(true);
+  });
+
+  it("preserves terminal tool_call_update for cancelled turns so client UI completes tool state", () => {
+    const fix = interruptionCleanupFix;
+    const mockCtx = createMockContext();
+
+    const promptMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 203,
+      method: "session/prompt",
+      params: { sessionId: "sess-tool-cancel-test", prompt: [{ type: "text", text: "run tool" }] },
+    } as unknown as AcpStreamMessage;
+
+    fix.onOutbound?.(promptMsg, mockCtx);
+
+    const cancelMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: "session/cancel",
+      params: { sessionId: "sess-tool-cancel-test" },
+    } as unknown as AcpStreamMessage;
+
+    fix.onOutbound?.(cancelMsg, mockCtx);
+
+    const toolCallUpdate: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "sess-tool-cancel-test",
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "tool-1",
+          status: "failed",
+        },
+      },
+    } as unknown as AcpStreamMessage;
+
+    const res = fix.onInbound?.(toolCallUpdate, mockCtx);
+    expect(res).toEqual([toolCallUpdate]);
   });
 });

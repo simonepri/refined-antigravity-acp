@@ -130,4 +130,84 @@ describe("cancellation-leak e2e", () => {
     const res2 = await client.waitForResponse(p2.id, 45000);
     expect("result" in res2 && res2.result).toBeTruthy();
   }, 60000);
+
+  it("solution: wrapped connector cancels in-flight tool turn cleanly without dropping tool completion or leaking raw errors", async () => {
+    const client = await spawnWrapped();
+    activeClients.push(client);
+    await client.initialize();
+    const { sessionId } = await client.newSession();
+
+    const marker = `cancel_tool_test_${Date.now()}`;
+    const p1 = await client.prompt(
+      sessionId,
+      `Run this shell command using run_command: echo "${marker}" && sleep 10 && echo "${marker}_done"`,
+    );
+
+    // Approve permission when requested
+    const permReq = await client.nextMatching(
+      (m) => "method" in m && m.method === "session/request_permission",
+      30000,
+    );
+    const permId = (permReq as { id: string | number }).id;
+    await client.send({
+      jsonrpc: "2.0",
+      id: permId,
+      result: {
+        outcome: { outcome: "selected", optionId: "allow" },
+      },
+    } as unknown as AcpStreamMessage);
+
+    // Wait until tool starts executing (tool_call_update with in_progress, or wait 500ms)
+    await new Promise((resolve) => setTimeout(resolve, 800));
+
+    // Send session/cancel
+    await client.send({
+      jsonrpc: "2.0",
+      method: "session/cancel",
+      params: { sessionId },
+    } as unknown as AcpStreamMessage);
+
+    // Prompt response must settle as cancelled
+    const res1 = await client.waitForResponse(p1.id, 5000);
+    expect("result" in res1 && (res1.result as { stopReason?: string }).stopReason).toBe(
+      "cancelled",
+    );
+
+    // Wait for upstream to unwind
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    // The probe process should NOT still be running
+    const { execSync } = await import("node:child_process");
+    const psAfter = execSync(`ps aux | grep "${marker}" | grep -v grep || true`, {
+      encoding: "utf8",
+    });
+    console.log("Processes after cancel in wrapped connector:", psAfter.trim());
+    expect(psAfter).not.toContain(marker);
+
+    // Check all messages received by the client:
+    // No raw cancellation chunks ("context canceled", "The request was cancelled by the client.")
+    const allMsgs = client.allMessages();
+    const leakedErrors = allMsgs.filter(
+      (m) =>
+        "method" in m &&
+        m.method === "session/update" &&
+        (JSON.stringify(m).includes("context canceled") ||
+          JSON.stringify(m).includes("The request was cancelled by the client")),
+    );
+    expect(leakedErrors).toHaveLength(0);
+
+    // A tool completion/failure update must have reached the client so UI does not spin indefinitely
+    const toolUpdates = allMsgs.filter(
+      (m) =>
+        "method" in m &&
+        m.method === "session/update" &&
+        (m.params as { update?: { sessionUpdate?: string; status?: string } })?.update
+          ?.sessionUpdate === "tool_call_update" &&
+        ["completed", "failed"].includes(
+          (m.params as { update?: { status?: string } })?.update?.status ?? "",
+        ),
+    );
+    console.log("Terminal tool updates received by client:", toolUpdates.length);
+    expect(toolUpdates.length).toBeGreaterThan(0);
+  }, 60000);
 });

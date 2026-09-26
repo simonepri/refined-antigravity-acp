@@ -11,6 +11,9 @@ import {
   computeToolCallSignature,
   createRepetitiveToolLoopFix,
   detectCycle,
+  extractPromptText,
+  extractRequestedIterations,
+  hasPollingIntent,
   inferToolNameFromUpdate,
   normalizeKey,
   RepetitiveToolLoopTracker,
@@ -99,6 +102,36 @@ describe("repetitive-tool-loop unit tests", () => {
     });
   });
 
+  describe("polling intent detection", () => {
+    it("detects polling keywords correctly", () => {
+      expect(hasPollingIntent("Wait for server to start")).toBe(true);
+      expect(hasPollingIntent("Check localhost:3000 until 200 OK")).toBe(true);
+      expect(hasPollingIntent("Poll the health endpoint")).toBe(true);
+      expect(hasPollingIntent("Retry the curl request")).toBe(true);
+      expect(hasPollingIntent("Run pwd 10 times consecutively")).toBe(true);
+      expect(hasPollingIntent("Inspect the package.json file")).toBe(false);
+      expect(hasPollingIntent("Find the line where server starts")).toBe(false);
+    });
+
+    it("extracts requested iterations from prompt", () => {
+      expect(extractRequestedIterations("Run pwd 10 times consecutively")).toBe(10);
+      expect(extractRequestedIterations("Retry 5 times")).toBe(5);
+      expect(extractRequestedIterations("Poll until ready")).toBeUndefined();
+    });
+
+    it("extracts prompt text from ACP messages", () => {
+      const msg = {
+        params: {
+          prompt: [
+            { type: "text", text: "Hello" },
+            { type: "text", text: "world" },
+          ],
+        },
+      } as unknown as AcpStreamMessage;
+      expect(extractPromptText(msg)).toBe("Hello world");
+    });
+  });
+
   describe("detectCycle", () => {
     it("detects single-tool repetition (k=1, R=3)", () => {
       const result = detectCycle(["A", "A", "A"]);
@@ -159,7 +192,7 @@ describe("repetitive-tool-loop unit tests", () => {
       expect(r3.isLoop).toBe(true);
 
       tracker.startTurn(session);
-      // run_command is mutating -> default threshold 5
+      // run_command is mutating -> default threshold 5 without polling intent
       tracker.recordToolCall(session, "run_command", { CommandLine: "curl localhost" });
       tracker.recordToolCall(session, "run_command", { CommandLine: "curl localhost" });
       const r3Mutating = tracker.recordToolCall(session, "run_command", {
@@ -172,6 +205,34 @@ describe("repetitive-tool-loop unit tests", () => {
         CommandLine: "curl localhost",
       });
       expect(r5Mutating.isLoop).toBe(true);
+    });
+
+    it("allows polling repetitions when prompt contains polling intent", () => {
+      const tracker = new RepetitiveToolLoopTracker();
+      const session = "s-poll";
+
+      // Turn with explicit polling intent: "Poll until ready"
+      tracker.startTurn(session, 1, "Poll http://localhost:3000 until ready");
+
+      // Should allow 10 repetitions without flagging as a loop
+      for (let i = 1; i <= 10; i++) {
+        const res = tracker.recordToolCall(session, "run_command", {
+          CommandLine: "curl localhost",
+        });
+        expect(res.isLoop).toBe(false);
+      }
+    });
+
+    it("allows user-requested iteration counts (e.g. '10 times')", () => {
+      const tracker = new RepetitiveToolLoopTracker();
+      const session = "s-times";
+
+      tracker.startTurn(session, 1, "Run pwd 10 times consecutively");
+
+      for (let i = 1; i <= 10; i++) {
+        const res = tracker.recordToolCall(session, "run_command", { CommandLine: "pwd" });
+        expect(res.isLoop).toBe(false);
+      }
     });
 
     it("resets history on new prompt turn", () => {
@@ -189,7 +250,7 @@ describe("repetitive-tool-loop unit tests", () => {
   });
 
   describe("createRepetitiveToolLoopFix hook", () => {
-    it("intercepts repetitive tool call, sends cancel upstream, emits completed tool & message chunk, and drops tool call", async () => {
+    it("intercepts repetitive tool call, completes tool, sends cancel, and delivers automated steering without polluting chat", async () => {
       const fix = createRepetitiveToolLoopFix();
       const context = createMockContext();
       const writtenToChild: AcpStreamMessage[] = [];
@@ -204,13 +265,13 @@ describe("repetitive-tool-loop unit tests", () => {
 
       const sessionId = "s-test-1";
 
-      // Start turn
+      // Start turn without polling intent
       await fix.onOutbound?.(
         {
           jsonrpc: "2.0",
           id: 1,
           method: ACP_METHODS.SESSION_PROMPT,
-          params: { sessionId, prompt: "do work" },
+          params: { sessionId, prompt: [{ type: "text", text: "Find the port in the config" }] },
         } as unknown as AcpStreamMessage,
         context,
       );
@@ -241,7 +302,7 @@ describe("repetitive-tool-loop unit tests", () => {
       // 6th call completes the 3rd repetition of cycle [1, 10]
       const finalRes = await fix.onInbound?.(makeToolCallMsg("c6", 10), context);
 
-      // Tool call dropped
+      // Tool call dropped from stream
       expect(finalRes).toEqual([]);
 
       // Cancel sent upstream to child
@@ -252,8 +313,8 @@ describe("repetitive-tool-loop unit tests", () => {
         params: { sessionId },
       });
 
-      // Inbound completed tool update and explanatory message chunk forwarded to client
-      expect(forwardedInbound).toHaveLength(2);
+      // Tool call marked completed in UI, but NO warning chunk leaked into chat
+      expect(forwardedInbound).toHaveLength(1);
       expect(forwardedInbound[0]).toMatchObject({
         method: ACP_METHODS.SESSION_UPDATE,
         params: {
@@ -265,30 +326,53 @@ describe("repetitive-tool-loop unit tests", () => {
           },
         },
       });
-      expect(forwardedInbound[1]).toMatchObject({
-        method: ACP_METHODS.SESSION_UPDATE,
-        params: {
-          sessionId,
-          update: {
-            sessionUpdate: SESSION_UPDATES.AGENT_MESSAGE_CHUNK,
-            content: {
-              type: "text",
-            },
-          },
-        },
-      });
 
-      // When upstream settles cancelled response, fix converts it to end_turn
+      // When upstream settles cancelled response, fix intercepts it and sends automated steering prompt
       const cancelledResponse: AcpStreamMessage = {
         jsonrpc: "2.0",
         id: 1,
         result: { stopReason: STOP_REASONS.CANCELLED },
       };
-      const settledRes = await fix.onInbound?.(cancelledResponse, context);
-      expect(settledRes).toHaveLength(1);
-      expect((settledRes?.[0] as { result?: { stopReason?: string } })?.result?.stopReason).toBe(
-        STOP_REASONS.END_TURN,
-      );
+      const steerRes = await fix.onInbound?.(cancelledResponse, context);
+
+      // Response suppressed from client so turn remains active
+      expect(steerRes).toEqual([]);
+
+      // Steering prompt sent upstream to child
+      expect(writtenToChild).toHaveLength(2);
+      expect(writtenToChild[1]).toMatchObject({
+        jsonrpc: "2.0",
+        method: ACP_METHODS.SESSION_PROMPT,
+        params: {
+          sessionId,
+          prompt: [
+            {
+              type: "text",
+            },
+          ],
+        },
+      });
+
+      const steerPromptText = (
+        writtenToChild[1] as unknown as { params: { prompt: Array<{ text: string }> } }
+      ).params.prompt[0]?.text;
+      expect(steerPromptText).toContain("[Automated Steering]");
+      expect(steerPromptText).toContain("repeatedly executed 'view_file'");
+
+      // When child completes steering prompt, fix maps response back to original prompt id 1
+      const steerPromptId = (writtenToChild[1] as unknown as { id: string }).id;
+      const steerCompleteMsg: AcpStreamMessage = {
+        jsonrpc: "2.0",
+        id: steerPromptId,
+        result: { stopReason: STOP_REASONS.END_TURN },
+      };
+      const finalTurnRes = await fix.onInbound?.(steerCompleteMsg, context);
+      expect(finalTurnRes).toHaveLength(1);
+      expect(finalTurnRes?.[0]).toMatchObject({
+        jsonrpc: "2.0",
+        id: 1, // Restored original prompt ID!
+        result: { stopReason: STOP_REASONS.END_TURN },
+      });
     });
   });
 });

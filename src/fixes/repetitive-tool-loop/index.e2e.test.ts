@@ -127,8 +127,8 @@ Alternate between reading Section A and Section B using view_file at least 5 tim
     // and not allow runaway cyclic calls
     expect(toolCalls.length).toBeLessThanOrEqual(6);
 
-    // An assistant message chunk explaining the loop interruption should be emitted
-    const hasLoopInterruptionChunk = allMsgs.some((m) => {
+    // Chat should not be polluted with raw warning banners
+    const hasUglyWarningChunk = allMsgs.some((m) => {
       if (!("method" in m) || m.method !== "session/update") return false;
       const update = (
         m.params as {
@@ -138,10 +138,10 @@ Alternate between reading Section A and Section B using view_file at least 5 tim
       return (
         update?.sessionUpdate === "agent_message_chunk" &&
         typeof update.content?.text === "string" &&
-        update.content.text.includes("repetitive tool calling loop")
+        update.content.text.includes("⚠️ Interrupted repetitive tool")
       );
     });
-    expect(hasLoopInterruptionChunk).toBe(true);
+    expect(hasUglyWarningChunk).toBe(false);
 
     // Subsequent prompt can be sent immediately without getting "A foreground turn is already active"
     const p2 = await client.prompt(sessionId, "What is 2 + 2? Answer with just the number.");

@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
-import { ACP_METHODS, SESSION_UPDATES, STOP_REASONS, type AcpStreamMessage } from "./types.js";
+import {
+  ACP_METHODS,
+  SESSION_UPDATES,
+  STOP_REASONS,
+  type AcpStreamMessage,
+  type SessionUpdateParams,
+} from "./types.js";
 import { AcpPipeline } from "./pipeline.js";
 import { ProcessSupervisor } from "./supervisor.js";
 import { getOrCreateSession } from "./session-cache.js";
@@ -494,6 +500,214 @@ describe("ProcessSupervisor", () => {
     // No synthetic end_turn should be emitted by default
     const syntheticResponses = forwarded.filter((m) => "id" in m && m.id === 105 && "result" in m);
     expect(syntheticResponses).toHaveLength(0);
+
+    await reader.cancel();
+    supervisor.close();
+  });
+
+  it("marks session for recycle when upstream emits agent connection loss chunk", async () => {
+    const { child } = createMockChild();
+    const supervisor = new ProcessSupervisor({
+      cmd: "mock-agy",
+      args: [],
+      initialChild: child,
+      pipeline: new AcpPipeline([]),
+    });
+    const streams = supervisor.createStreams();
+    const reader = streams.readable.getReader();
+
+    // Allocate session in cache
+    await supervisor.handleOutbound({
+      jsonrpc: "2.0",
+      id: 200,
+      method: ACP_METHODS.SESSION_NEW,
+      params: { cwd: "/tmp" },
+    } as unknown as AcpStreamMessage);
+    await supervisor.handleStdoutLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 200,
+        result: { sessionId: "session-conn-lost" },
+      }),
+    );
+
+    const session = supervisor.sessionCache.sessions.get("session-conn-lost");
+    expect(session).toBeDefined();
+    expect(session?.needsRecycle).toBeFalsy();
+
+    // Upstream emits agent connection loss message chunk
+    await supervisor.handleStdoutLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: ACP_METHODS.SESSION_UPDATE,
+        params: {
+          sessionId: "session-conn-lost",
+          update: {
+            sessionUpdate: SESSION_UPDATES.AGENT_MESSAGE_CHUNK,
+            content: {
+              type: "text",
+              text: "Agent connection was lost and could not be re-established: Failed to rebuild agent: received 1000 (OK); then sent 1000 (OK)",
+            },
+          },
+        },
+      }),
+    );
+
+    expect(session?.needsRecycle).toBe(true);
+
+    await reader.cancel();
+    supervisor.close();
+  });
+  it("solution: automatically recycles process and retries active prompt on connection loss without leaking error chunk", async () => {
+    const { child: initialChild } = createMockChild();
+    const forwarded: AcpStreamMessage[] = [];
+    const { child: recycledChild } = createMockChild();
+
+    const supervisor = new ProcessSupervisor({
+      cmd: "mock-agy",
+      args: [],
+      initialChild,
+      pipeline: new AcpPipeline([]),
+      spawnProcess: () => recycledChild,
+    });
+
+    const streams = supervisor.createStreams();
+    const reader = streams.readable.getReader();
+    void (async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) forwarded.push(value);
+      }
+    })();
+
+    // 1. Allocate session
+    await supervisor.handleOutbound({
+      jsonrpc: "2.0",
+      id: 201,
+      method: ACP_METHODS.SESSION_NEW,
+      params: { cwd: "/tmp" },
+    } as unknown as AcpStreamMessage);
+    await supervisor.handleStdoutLine(
+      JSON.stringify({ jsonrpc: "2.0", id: 201, result: { sessionId: "session-conn-retry" } }),
+    );
+
+    // Track recycled child stdin to respond to resync and the retried prompt
+    let retriedPromptReceived = false;
+    const handleRecycledChildStdin = async (line: string) => {
+      const msg = JSON.parse(line) as { id?: string | number; method?: string };
+      if (msg.id === "__refined_agy_recycle_init") {
+        await supervisor.handleStdoutLine(
+          JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }),
+        );
+      } else if (msg.id === "__refined_agy_recycle_load") {
+        await supervisor.handleStdoutLine(
+          JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }),
+        );
+      } else if (msg.method === ACP_METHODS.SESSION_PROMPT) {
+        retriedPromptReceived = true;
+        // Stream successful recovered reply
+        await supervisor.handleStdoutLine(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            method: ACP_METHODS.SESSION_UPDATE,
+            params: {
+              sessionId: "session-conn-retry",
+              update: {
+                sessionUpdate: SESSION_UPDATES.AGENT_MESSAGE_CHUNK,
+                content: { type: "text", text: "Recovered answer successfully" },
+              },
+            },
+          }),
+        );
+        await supervisor.handleStdoutLine(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: msg.id,
+            result: { stopReason: STOP_REASONS.END_TURN },
+          }),
+        );
+      }
+    };
+
+    recycledChild.stdin?.on("data", (chunk: Buffer) => {
+      const lines = chunk.toString("utf-8").split("\n").filter(Boolean);
+      for (const line of lines) {
+        void handleRecycledChildStdin(line);
+      }
+    });
+
+    // 2. Client sends in-flight prompt
+    await supervisor.handleOutbound({
+      jsonrpc: "2.0",
+      id: 301,
+      method: ACP_METHODS.SESSION_PROMPT,
+      params: {
+        sessionId: "session-conn-retry",
+        prompt: [{ type: "text", text: "Help with task" }],
+      },
+    } as unknown as AcpStreamMessage);
+
+    // 3. Upstream emits agent connection lost error chunk
+    await supervisor.handleStdoutLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: ACP_METHODS.SESSION_UPDATE,
+        params: {
+          sessionId: "session-conn-retry",
+          update: {
+            sessionUpdate: SESSION_UPDATES.AGENT_MESSAGE_CHUNK,
+            content: {
+              type: "text",
+              text: "Agent connection was lost and could not be re-established: Failed to rebuild agent: received 1000 (OK); then sent 1000 (OK)",
+            },
+          },
+        },
+      }),
+    );
+
+    // 4. Upstream terminates turn with end_turn
+    await supervisor.handleStdoutLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 301,
+        result: { stopReason: STOP_REASONS.END_TURN },
+      }),
+    );
+
+    // Wait for async recycle and prompt replay
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    // Verify retried prompt was received by the fresh process
+    expect(retriedPromptReceived).toBe(true);
+
+    // Verify client never received the connection lost error chunk
+    const errorChunk = forwarded.find((m) => {
+      if (!("params" in m)) return false;
+      const u = (m.params as SessionUpdateParams | undefined)?.update;
+      const t =
+        u?.sessionUpdate === SESSION_UPDATES.AGENT_MESSAGE_CHUNK
+          ? (u as { content?: { text?: string } }).content?.text
+          : undefined;
+      return typeof t === "string" && t.includes("Agent connection was lost");
+    });
+    expect(errorChunk).toBeUndefined();
+
+    // Verify client received the recovered answer chunk
+    const recoveredChunk = forwarded.find((m) => {
+      if (!("params" in m)) return false;
+      const u = (m.params as SessionUpdateParams | undefined)?.update;
+      const t =
+        u?.sessionUpdate === SESSION_UPDATES.AGENT_MESSAGE_CHUNK
+          ? (u as { content?: { text?: string } }).content?.text
+          : undefined;
+      return t === "Recovered answer successfully";
+    });
+    expect(recoveredChunk).toBeDefined();
+
+    // Verify client received the final end_turn result for prompt 301
+    const finalResult = forwarded.find((m) => "id" in m && m.id === 301 && "result" in m);
+    expect(finalResult).toBeDefined();
 
     await reader.cancel();
     supervisor.close();

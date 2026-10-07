@@ -19,6 +19,7 @@ import {
   type SessionUpdateParams,
   type UrlRewriter,
   isJsonRpcResponse,
+  isJsonRpcRequest,
 } from "./types.js";
 import type { AcpPipeline } from "./pipeline.js";
 import {
@@ -86,6 +87,18 @@ function isNonTerminalActivity(msg: AcpStreamMessage): boolean {
   );
 }
 
+const AGENT_CONNECTION_LOST_PATTERN = /agent connection (was )?lost|failed to rebuild agent/i;
+
+function isAgentConnectionLostChunk(msg: AcpStreamMessage): boolean {
+  if (!("method" in msg) || msg.method !== ACP_METHODS.SESSION_UPDATE) return false;
+  const update = (msg.params as SessionUpdateParams | undefined)?.update;
+  const text =
+    update?.sessionUpdate === SESSION_UPDATES.AGENT_MESSAGE_CHUNK
+      ? (update as { content?: { text?: string } }).content?.text
+      : undefined;
+  return typeof text === "string" && AGENT_CONNECTION_LOST_PATTERN.test(text);
+}
+
 interface PendingInternalRequest {
   resolve: (msg: AcpStreamMessage) => void;
   reject: (err: Error) => void;
@@ -128,6 +141,8 @@ export class ProcessSupervisor implements CoreContext {
   private readonly promptSettlementTimeoutMs: number;
   private readonly promptSettlementTimers = new Map<string, NodeJS.Timeout>();
   private readonly activePrompts = new Map<string, string | number>();
+  private readonly activePromptMessages = new Map<string, AcpStreamMessage>();
+  private readonly pendingConnectionLossRetries = new Map<string, { attempts: number }>();
   private readonly pendingRequests = new Map<string | number, PendingInternalRequest>();
   private readonly suppressedResponseIds = new Set<string | number>();
   private activeRecycle: Promise<void> | null = null;
@@ -232,6 +247,8 @@ export class ProcessSupervisor implements CoreContext {
     }
     this.promptSettlementTimers.clear();
     this.activePrompts.clear();
+    this.activePromptMessages.clear();
+    this.pendingConnectionLossRetries.clear();
   }
 
   private armPromptSettlementWatchdog(sessionId: string): void {
@@ -254,6 +271,8 @@ export class ProcessSupervisor implements CoreContext {
     if (currentActivePromptId !== promptId) return;
 
     this.activePrompts.delete(sessionId);
+    this.activePromptMessages.delete(sessionId);
+    this.pendingConnectionLossRetries.delete(sessionId);
     if (this.suppressedResponseIds.size >= 1000) {
       const oldest = this.suppressedResponseIds.keys().next().value;
       if (oldest !== undefined) this.suppressedResponseIds.delete(oldest);
@@ -440,6 +459,8 @@ export class ProcessSupervisor implements CoreContext {
     if (p?.sessionId) {
       this.clearPromptSettlementTimer(p.sessionId);
       this.activePrompts.delete(p.sessionId);
+      this.activePromptMessages.delete(p.sessionId);
+      this.pendingConnectionLossRetries.delete(p.sessionId);
       this.sessionCache.sessions.delete(p.sessionId);
     }
   }
@@ -457,6 +478,8 @@ export class ProcessSupervisor implements CoreContext {
     if (p?.sessionId) {
       this.clearPromptSettlementTimer(p.sessionId);
       this.activePrompts.delete(p.sessionId);
+      this.activePromptMessages.delete(p.sessionId);
+      this.pendingConnectionLossRetries.delete(p.sessionId);
     }
   }
 
@@ -508,6 +531,14 @@ export class ProcessSupervisor implements CoreContext {
     const transformed = await this.pipeline.applyOutbound(msg, context);
     if (transformed === null) return;
 
+    if (
+      sessionId &&
+      isJsonRpcRequest(transformed) &&
+      transformed.method === ACP_METHODS.SESSION_PROMPT
+    ) {
+      this.activePromptMessages.set(sessionId, structuredClone(transformed));
+    }
+
     this.trackPendingRequestSession(msg, sessionId);
     await this.writeToChild(transformed);
   }
@@ -532,6 +563,7 @@ export class ProcessSupervisor implements CoreContext {
       if (pId === msgId) {
         this.clearPromptSettlementTimer(sId);
         this.activePrompts.delete(sId);
+        this.activePromptMessages.delete(sId);
       }
     }
   }
@@ -551,12 +583,68 @@ export class ProcessSupervisor implements CoreContext {
     }
   }
 
+  private shouldSuppressConnectionLossChunk(sessionId: string): boolean {
+    const session = getOrCreateSession(this.sessionCache, sessionId);
+    session.needsRecycle = true;
+    if (!this.activePrompts.has(sessionId)) return false;
+    const retryState = this.pendingConnectionLossRetries.get(sessionId) ?? { attempts: 0 };
+    if (retryState.attempts < 1) {
+      this.pendingConnectionLossRetries.set(sessionId, retryState);
+      return true;
+    }
+    return false;
+  }
+
+  private async tryHandleConnectionLossRetry(
+    msg: AcpStreamMessage,
+    sessionId: string,
+  ): Promise<boolean> {
+    const retryState = this.pendingConnectionLossRetries.get(sessionId);
+    const promptId = this.activePrompts.get(sessionId);
+    if (!retryState || promptId === undefined || (msg as { id?: unknown }).id !== promptId) {
+      return false;
+    }
+
+    this.pendingConnectionLossRetries.delete(sessionId);
+    retryState.attempts += 1;
+    const session = getOrCreateSession(this.sessionCache, sessionId);
+    const promptMsg = this.activePromptMessages.get(sessionId);
+    if (!promptMsg) return false;
+
+    console.warn(
+      `[refined-antigravity-acp] Agent connection lost for session ${sessionId}; recycling process and retrying prompt`,
+    );
+    this.clearPromptSettlementTimer(sessionId);
+    await this.triggerRecycle(session);
+    trackPendingRequestSession(this.sessionCache, promptId, sessionId);
+    await this.writeToChild(promptMsg);
+    return true;
+  }
+
+  private async interceptInboundConnectionLoss(
+    msg: AcpStreamMessage,
+    sessionId: string | undefined,
+  ): Promise<boolean> {
+    if (!sessionId) return false;
+    if (isAgentConnectionLostChunk(msg)) {
+      return this.shouldSuppressConnectionLossChunk(sessionId);
+    }
+    if ("result" in msg) {
+      return this.tryHandleConnectionLossRetry(msg, sessionId);
+    }
+    return false;
+  }
+
   private async dispatchInboundPipeline(
     msg: AcpStreamMessage,
     sessionId: string | undefined,
     context: InboundContext,
   ): Promise<void> {
     try {
+      if (await this.interceptInboundConnectionLoss(msg, sessionId)) {
+        return;
+      }
+
       this.handleInboundPromptSettlement(msg, sessionId);
 
       const messages = await this.pipeline.applyInbound(msg, context);

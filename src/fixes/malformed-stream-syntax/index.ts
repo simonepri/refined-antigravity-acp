@@ -190,6 +190,8 @@ export class StreamSanitizer {
   private harnessStack: string[] = [];
   private buffer = "";
   private inBackgroundTask = false;
+  private inCodeFence = false;
+  private inInlineCode = false;
 
   get inHarnessTag(): boolean {
     return this.harnessStack.length > 0;
@@ -199,6 +201,20 @@ export class StreamSanitizer {
     this.harnessStack = [];
     this.buffer = "";
     this.inBackgroundTask = false;
+    this.inCodeFence = false;
+    this.inInlineCode = false;
+  }
+
+  private updateCodeState(text: string): void {
+    if (text.includes("\n\n")) this.inInlineCode = false;
+    for (const [m] of text.matchAll(/`+/g)) {
+      if (m.length >= 3) {
+        this.inCodeFence = !this.inCodeFence;
+        this.inInlineCode = false;
+      } else if (!this.inCodeFence) {
+        this.inInlineCode = !this.inInlineCode;
+      }
+    }
   }
 
   process(chunk: string): string {
@@ -211,32 +227,38 @@ export class StreamSanitizer {
         input = this.processInHarness(input);
         continue;
       }
-
       if (this.inBackgroundTask) {
         input = this.processInBackgroundTask(input);
         continue;
       }
 
-      const bannerCheck = this.checkBannerOrSystemMessage(input);
-      if (bannerCheck.buffered) {
-        output += bannerCheck.output;
-        break;
-      }
-      if (bannerCheck.remainder !== input) {
-        output += bannerCheck.output;
-        input = bannerCheck.remainder;
+      const banner = this.checkBannerOrSystemMessage(input);
+      if (banner.buffered) return output + banner.output;
+      if (banner.remainder !== input) {
+        output += banner.output;
+        input = banner.remainder;
         continue;
       }
 
       const ltIdx = input.indexOf("<");
       if (ltIdx === -1) {
+        this.updateCodeState(input);
         output += input;
         break;
       }
 
       if (ltIdx > 0) {
-        output += input.slice(0, ltIdx);
+        const prefix = input.slice(0, ltIdx);
+        this.updateCodeState(prefix);
+        output += prefix;
         input = input.slice(ltIdx);
+      }
+
+      if (this.inCodeFence || this.inInlineCode) {
+        this.updateCodeState(input[0] ?? "");
+        output += input[0];
+        input = input.slice(1);
+        continue;
       }
 
       const gtIdx = input.indexOf(">");
@@ -245,12 +267,14 @@ export class StreamSanitizer {
           this.buffer = input;
           break;
         }
+        this.updateCodeState(input[0] ?? "");
         output += input[0];
         input = input.slice(1);
         continue;
       }
 
       const res = this.handleFullTag(input, gtIdx);
+      this.updateCodeState(res.text);
       output += res.text;
       input = res.remainder;
     }

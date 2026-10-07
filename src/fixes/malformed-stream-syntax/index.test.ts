@@ -75,6 +75,37 @@ describe("StreamSanitizer", () => {
     output += sanitizer.flush();
     expect(output).toBe(raw);
   });
+
+  it("preserves harness tag names inside inline code spans without swallowing subsequent text", () => {
+    const sanitizer = new StreamSanitizer();
+    const raw =
+      "* **Antigravity System Prompt (`<artifacts>`):\n  * Upstream Antigravity explicitly specifies:\n    All artifacts should be written to the artifact directory.";
+    const result = sanitizer.process(raw) + sanitizer.flush();
+    expect(result).toBe(raw);
+  });
+
+  it("preserves harness tags inside fenced code blocks", () => {
+    const sanitizer = new StreamSanitizer();
+    const raw = "```xml\n<artifacts>\n  <item />\n</artifacts>\n```\nVisible text.";
+    const result = sanitizer.process(raw) + sanitizer.flush();
+    expect(result).toBe(raw);
+  });
+
+  it("preserves inline code harness tags streamed across small chunks", () => {
+    const sanitizer = new StreamSanitizer();
+    const chunks = [
+      "* **Antigravity System Prompt (`",
+      "<artifacts>",
+      "`):\n",
+      "  * Important analysis continues here without truncation.",
+    ];
+    let output = "";
+    for (const chunk of chunks) {
+      output += sanitizer.process(chunk);
+    }
+    output += sanitizer.flush();
+    expect(output).toBe(chunks.join(""));
+  });
 });
 
 describe("streamSanitizationFix", () => {

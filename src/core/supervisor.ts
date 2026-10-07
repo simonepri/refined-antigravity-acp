@@ -646,6 +646,10 @@ export class ProcessSupervisor implements CoreContext {
       }
 
       this.handleInboundPromptSettlement(msg, sessionId);
+      if (sessionId && isAgentConnectionLostChunk(msg)) {
+        const session = getOrCreateSession(this.sessionCache, sessionId);
+        session.needsRecycle = true;
+      }
 
       const messages = await this.pipeline.applyInbound(msg, context);
       for (const m of messages) this.forwardInbound(m);

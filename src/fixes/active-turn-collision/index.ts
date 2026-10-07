@@ -33,6 +33,7 @@ export function stripSteeringPrefix(text: string): string {
 
 export const FOREGROUND_TURN_ERROR_PATTERN = /foreground turn is already active/i;
 export const DONE_CH_ERROR_PATTERN = new RegExp(DONE_CH_PANIC_MARKER, "i");
+export const SESSION_NOT_FOUND_PATTERN = /session not found/i;
 export const MAX_PROMPT_RETRIES = 5;
 export const DEFAULT_PROMPT_RETRY_DELAY_MS = 500;
 
@@ -48,9 +49,10 @@ interface PendingRetryItem {
 }
 
 function parsePromptError(msg: AcpStreamMessage): { isDoneCh: boolean } | null {
-  if (!("error" in msg) || !msg.error || typeof msg.error.message !== "string") return null;
-  const text = msg.error.message;
-  if (DONE_CH_ERROR_PATTERN.test(text)) return { isDoneCh: true };
+  if (!("error" in msg) || !msg.error) return null;
+  const text = JSON.stringify(msg.error);
+  if (DONE_CH_ERROR_PATTERN.test(text) || SESSION_NOT_FOUND_PATTERN.test(text))
+    return { isDoneCh: true };
   if (FOREGROUND_TURN_ERROR_PATTERN.test(text)) return { isDoneCh: false };
   return null;
 }

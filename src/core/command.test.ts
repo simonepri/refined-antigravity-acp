@@ -43,8 +43,12 @@ describe("version and binary URLs", () => {
       process.env.REFINED_AGY_OFFICIAL_ACP_VERSION = "2.0.0";
       expect(getAgyVersion()).toBe("2.0.0");
       expect(getBinaryUrl("darwin-arm64")).toContain("agy-acp-server-2.0.0-darwin-arm64.zip");
+      expect(getBinaryUrl("darwin-x64")).toContain("agy-acp-server-2.0.0-darwin-x86_64.zip");
       expect(getBinaryUrl("darwin-arm64", "1.1.1")).toContain(
         "agy-acp-server-agy_acp_server_1.1.1-darwin-arm64.zip",
+      );
+      expect(getBinaryUrl("darwin-x64", "1.1.1")).toContain(
+        "agy-acp-server-agy_acp_server_1.1.1-darwin-x86_64.zip",
       );
     } finally {
       if (origOfficial !== undefined) process.env.REFINED_AGY_OFFICIAL_ACP_VERSION = origOfficial;
@@ -58,6 +62,7 @@ describe("version and binary URLs", () => {
 
   it("maps operating system and architecture to valid platform keys", () => {
     expect(getPlatformKey("darwin", "arm64")).toBe("darwin-arm64");
+    expect(getPlatformKey("darwin", "x64")).toBe("darwin-x64");
     expect(getPlatformKey("freebsd", "x64")).toBeNull();
   });
 });

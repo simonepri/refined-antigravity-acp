@@ -21,6 +21,7 @@ export function getBinaryUrls(version: string = getAgyVersion()): Record<string,
   const prefix = getArchivePrefix(version);
   return {
     "darwin-arm64": `https://dl.google.com/agy-extensions/releases/macos/${prefix}${version}-darwin-arm64.zip`,
+    "darwin-x64": `https://dl.google.com/agy-extensions/releases/macos/${prefix}${version}-darwin-x86_64.zip`,
     "linux-x64": `https://dl.google.com/agy-extensions/releases/linux/${prefix}${version}-linux-x86_64.zip`,
     "linux-arm64": `https://dl.google.com/agy-extensions/releases/linux/${prefix}${version}-linux-arm64.zip`,
     "win32-x64": `https://dl.google.com/agy-extensions/releases/windows/${prefix}${version}-windows-x86_64.zip`,

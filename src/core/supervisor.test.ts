@@ -498,4 +498,58 @@ describe("ProcessSupervisor", () => {
     await reader.cancel();
     supervisor.close();
   });
+
+  it("marks session for recycle when upstream emits agent connection loss chunk", async () => {
+    const { child } = createMockChild();
+    const supervisor = new ProcessSupervisor({
+      cmd: "mock-agy",
+      args: [],
+      initialChild: child,
+      pipeline: new AcpPipeline([]),
+    });
+    const streams = supervisor.createStreams();
+    const reader = streams.readable.getReader();
+
+    // Allocate session in cache
+    await supervisor.handleOutbound({
+      jsonrpc: "2.0",
+      id: 200,
+      method: ACP_METHODS.SESSION_NEW,
+      params: { cwd: "/tmp" },
+    } as unknown as AcpStreamMessage);
+    await supervisor.handleStdoutLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 200,
+        result: { sessionId: "session-conn-lost" },
+      }),
+    );
+
+    const session = supervisor.sessionCache.sessions.get("session-conn-lost");
+    expect(session).toBeDefined();
+    expect(session?.needsRecycle).toBeFalsy();
+
+    // Upstream emits agent connection loss message chunk
+    await supervisor.handleStdoutLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: ACP_METHODS.SESSION_UPDATE,
+        params: {
+          sessionId: "session-conn-lost",
+          update: {
+            sessionUpdate: SESSION_UPDATES.AGENT_MESSAGE_CHUNK,
+            content: {
+              type: "text",
+              text: "Agent connection was lost and could not be re-established: Failed to rebuild agent: received 1000 (OK); then sent 1000 (OK)",
+            },
+          },
+        },
+      }),
+    );
+
+    expect(session?.needsRecycle).toBe(true);
+
+    await reader.cancel();
+    supervisor.close();
+  });
 });

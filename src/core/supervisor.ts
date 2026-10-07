@@ -86,6 +86,18 @@ function isNonTerminalActivity(msg: AcpStreamMessage): boolean {
   );
 }
 
+const AGENT_CONNECTION_LOST_PATTERN = /agent connection (was )?lost|failed to rebuild agent/i;
+
+function isAgentConnectionLostChunk(msg: AcpStreamMessage): boolean {
+  if (!("method" in msg) || msg.method !== ACP_METHODS.SESSION_UPDATE) return false;
+  const update = (msg.params as SessionUpdateParams | undefined)?.update;
+  const text =
+    update?.sessionUpdate === SESSION_UPDATES.AGENT_MESSAGE_CHUNK
+      ? (update as { content?: { text?: string } }).content?.text
+      : undefined;
+  return typeof text === "string" && AGENT_CONNECTION_LOST_PATTERN.test(text);
+}
+
 interface PendingInternalRequest {
   resolve: (msg: AcpStreamMessage) => void;
   reject: (err: Error) => void;
@@ -558,6 +570,10 @@ export class ProcessSupervisor implements CoreContext {
   ): Promise<void> {
     try {
       this.handleInboundPromptSettlement(msg, sessionId);
+      if (sessionId && isAgentConnectionLostChunk(msg)) {
+        const session = getOrCreateSession(this.sessionCache, sessionId);
+        session.needsRecycle = true;
+      }
 
       const messages = await this.pipeline.applyInbound(msg, context);
       for (const m of messages) this.forwardInbound(m);

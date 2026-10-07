@@ -102,8 +102,13 @@ function patchFieldIfAskQuestion(container: Record<string, unknown>, field: stri
   }
 }
 
-function isAskQuestionName(name?: string | null, title?: string | null): boolean {
+function isAskQuestionName(
+  name?: string | null,
+  title?: string | null,
+  toolCallId?: string | null,
+): boolean {
   if (name === "ask_question") return true;
+  if (typeof toolCallId === "string" && toolCallId.startsWith("interaction_")) return true;
   return typeof title === "string" && title.toLowerCase().includes("ask_question");
 }
 
@@ -113,23 +118,42 @@ function handleSessionUpdate(update: SessionUpdatePayload): void {
     update.sessionUpdate === SESSION_UPDATES.TOOL_CALL_UPDATE;
   if (!isToolCall) return;
 
-  if (isAskQuestionName(update.name ?? undefined, update.title ?? undefined)) {
+  if (
+    isAskQuestionName(
+      update.name ?? undefined,
+      update.title ?? undefined,
+      update.toolCallId ?? undefined,
+    )
+  ) {
     patchFieldIfAskQuestion(update as Record<string, unknown>, "rawInput");
     patchFieldIfAskQuestion(update as Record<string, unknown>, "arguments");
   }
 }
 
+function isToolInvocationMethod(method: string): boolean {
+  return (
+    method === "tools/call" ||
+    method === ACP_METHODS.SESSION_REQUEST_PERMISSION ||
+    method === "session/requestPermission"
+  );
+}
+
+function isAskQuestionPayload(p: Record<string, unknown>): boolean {
+  const toolName = (p.name ?? p.tool) as string | undefined;
+  if (toolName === "ask_question") return true;
+  const toolCallId = (p.toolCallId ??
+    (p.toolCall as Record<string, unknown> | undefined)?.toolCallId) as string | undefined;
+  return typeof toolCallId === "string" && toolCallId.startsWith("interaction_");
+}
+
 function handleRpcRequest(msg: AcpStreamMessage): void {
-  if (!("method" in msg) || typeof msg.method !== "string") return;
-  const isToolInvocation =
-    msg.method === "tools/call" ||
-    msg.method === ACP_METHODS.SESSION_REQUEST_PERMISSION ||
-    msg.method === "session/requestPermission";
-  if (!isToolInvocation || !msg.params || typeof msg.params !== "object") return;
+  if (!("method" in msg) || typeof msg.method !== "string" || !isToolInvocationMethod(msg.method)) {
+    return;
+  }
+  if (!msg.params || typeof msg.params !== "object") return;
 
   const p = msg.params as Record<string, unknown>;
-  const toolName = (p.name ?? p.tool) as string | undefined;
-  if (toolName === "ask_question") {
+  if (isAskQuestionPayload(p)) {
     patchFieldIfAskQuestion(p, "arguments");
     patchFieldIfAskQuestion(p, "rawInput");
   }
@@ -234,7 +258,7 @@ function trackInboundToolCallId(
   const sessionId = extractSessionId(msg);
   if (!sessionId || update.sessionUpdate !== SESSION_UPDATES.TOOL_CALL) return;
 
-  if (isAskQuestionName(update.name, update.title) && update.toolCallId) {
+  if (isAskQuestionName(update.name, update.title, update.toolCallId) && update.toolCallId) {
     const existing = pendingQuestions.get(sessionId);
     if (existing && !existing.toolCallId) {
       existing.toolCallId = update.toolCallId;

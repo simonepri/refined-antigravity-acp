@@ -194,4 +194,72 @@ describe("missing-question-fallback fix", () => {
     await fix.onOutbound?.(nextPromptMsg, mockContext);
     expect(writtenToChild).toHaveLength(0);
   });
+
+  it("unblocks pending interaction_ tool call when user sends a chat prompt", async () => {
+    const fix = createQuestionOptionsFix();
+    const writtenToChild: AcpStreamMessage[] = [];
+    const forwardedInbound: AcpStreamMessage[] = [];
+
+    const mockContext = {
+      ...createMockContext(),
+      writeToChild: async (msg: AcpStreamMessage) => {
+        writtenToChild.push(msg);
+      },
+      forwardInbound: (msg: AcpStreamMessage) => {
+        forwardedInbound.push(msg);
+      },
+    };
+
+    const interactionMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: "perm_interaction_1",
+      method: "session/request_permission",
+      params: {
+        sessionId: "s1",
+        toolCall: {
+          toolCallId: "interaction_aba27307",
+          title: "How should we package the upstream pull request(s)?",
+          status: "pending",
+        },
+        options: [
+          { optionId: "1", name: "Split into three PRs" },
+          { optionId: "2", name: "Combined PR" },
+        ],
+      },
+    } as unknown as AcpStreamMessage;
+
+    fix.onInbound?.(interactionMsg, mockContext);
+
+    const userPromptMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 205,
+      method: "session/prompt",
+      params: {
+        sessionId: "s1",
+        prompt: [{ type: "text", text: "Neither, please wait." }],
+      },
+    } as unknown as AcpStreamMessage;
+
+    await fix.onOutbound?.(userPromptMsg, mockContext);
+
+    expect(writtenToChild).toHaveLength(1);
+    expect(writtenToChild[0]).toEqual({
+      jsonrpc: "2.0",
+      id: "perm_interaction_1",
+      result: { outcome: { outcome: "cancelled" } },
+    });
+    expect(forwardedInbound).toHaveLength(1);
+    expect(forwardedInbound[0]).toEqual({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s1",
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "interaction_aba27307",
+          status: "completed",
+        },
+      },
+    });
+  });
 });

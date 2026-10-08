@@ -105,6 +105,27 @@ export function injectSkillsCatalog(prompt: unknown, cwd?: string): void {
   }
 }
 
+function promptHasSkillsCatalog(prompt: unknown): boolean {
+  if (!Array.isArray(prompt)) return false;
+  return prompt.some((chunk) => {
+    if (typeof chunk?.text === "string") {
+      return chunk.text.includes("<available_skills>") || chunk.text.includes("<skills>");
+    }
+    return false;
+  });
+}
+
+function shouldInjectSkillsCatalog(prompt: unknown): boolean {
+  const envVal = process.env.REFINED_AGY_INJECT_SKILLS?.trim().toLowerCase();
+  if (envVal === "0" || envVal === "false" || envVal === "no") {
+    return false;
+  }
+  if (promptHasSkillsCatalog(prompt)) {
+    return false;
+  }
+  return true;
+}
+
 function handleSessionPromptOutbound(msg: AcpStreamMessage, context: OutboundContext): void {
   const sessionId = extractSessionId(msg);
   if (!sessionId) return;
@@ -112,11 +133,14 @@ function handleSessionPromptOutbound(msg: AcpStreamMessage, context: OutboundCon
   const session = getOrCreateSession(context.sessionCache, sessionId);
   const hasInjected = session.fixData?.get("hasInjectedSkillsCatalog");
   if (!hasInjected) {
-    const prompt =
-      "params" in msg ? (msg.params as SessionPromptParams | undefined)?.prompt : undefined;
-    injectSkillsCatalog(prompt, session.cwd);
     session.fixData ??= new Map();
     session.fixData.set("hasInjectedSkillsCatalog", true);
+
+    const prompt =
+      "params" in msg ? (msg.params as SessionPromptParams | undefined)?.prompt : undefined;
+    if (shouldInjectSkillsCatalog(prompt)) {
+      injectSkillsCatalog(prompt, session.cwd);
+    }
   }
 }
 

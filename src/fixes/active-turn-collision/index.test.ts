@@ -137,6 +137,56 @@ describe("userSteeringFix", () => {
     expect(writtenToChild).toEqual(promptMsg);
   });
 
+  it("recycles process and retries immediately when upstream rejects with Session not found error details", async () => {
+    const fix = createUserSteeringFix({ delayMs: 10 });
+    const promptMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 201,
+      method: "session/prompt",
+      params: { sessionId: "s-evicted", prompt: [{ type: "text", text: "retry this prompt" }] },
+    } as unknown as AcpStreamMessage;
+
+    fix.onOutbound?.(promptMsg, dummyContext);
+
+    let recycled = false;
+    let writtenToChild: AcpStreamMessage | null = null;
+    const testContext: InboundContext = {
+      sessionCache: {
+        sessions: new Map(),
+        pendingSessionMetadata: new Map(),
+        pendingRequestSessions: new Map(),
+      },
+      forwardInbound: () => {},
+      writeToChild: async (msg) => {
+        writtenToChild = msg;
+      },
+      sendInternalRequest: async () => ({}) as AcpStreamMessage,
+      triggerRecycle: async () => {
+        recycled = true;
+      },
+      declareHang: () => {},
+    };
+
+    const sessionNotFoundError: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 201,
+      error: {
+        code: -32603,
+        message: "Internal error",
+        data: { details: "Session not found: s-evicted" },
+      },
+    } as unknown as AcpStreamMessage;
+
+    const res = await fix.onInbound?.(sessionNotFoundError, testContext);
+    expect(res).toEqual([]); // Suppressed from forwarding to client
+    expect(recycled).toBe(true);
+
+    // Wait for the immediate retry timer (isDoneCh=true uses 0 delay)
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(writtenToChild).toEqual(promptMsg);
+    expect(testContext.sessionCache.pendingRequestSessions.get(201)).toBe("s-evicted");
+  });
+
   it("provides system instructions requiring direct acknowledgment of mid-turn updates", () => {
     const fix = createUserSteeringFix();
     const instructions = fix.getSystemInstructions?.();

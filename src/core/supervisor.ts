@@ -724,15 +724,17 @@ export class ProcessSupervisor implements CoreContext {
       clientInfo: { name: "refined-antigravity-acp", version: "0.2.0" },
     };
 
-    await this.sendInternalRequest({
+    const context = this.createContext(session);
+    const initMsg = {
       jsonrpc: "2.0",
       id: RECYCLE_INIT_ID,
       method: "initialize",
       params: initParams,
-    } as unknown as AcpStreamMessage);
+    } as unknown as AcpStreamMessage;
+    const transformedInit = await this.pipeline.applyOutbound(initMsg, context);
+    await this.sendInternalRequest(transformedInit ?? initMsg);
 
     await this.pipeline.applyRecycle(session, newChild, this);
-    const context = this.createContext(session);
 
     await this.resyncSessionLoad(session, context);
     await this.resyncSessionMode(session, context);

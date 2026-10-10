@@ -174,6 +174,56 @@ describe("ProcessSupervisor", () => {
     supervisor.close();
   });
 
+  it("solution: triggerRecycle sends the cached initialize through the outbound pipeline", async () => {
+    const { child: initialChild } = createMockChild();
+    const { child: recycledChild } = createMockChild();
+    const sentInitialize: AcpStreamMessage[] = [];
+
+    const supervisor = new ProcessSupervisor({
+      cmd: "mock-agy",
+      args: [],
+      initialChild,
+      pipeline: new AcpPipeline([
+        {
+          name: "rename-client",
+          onOutbound: (msg) =>
+            "method" in msg && msg.method === ACP_METHODS.INITIALIZE
+              ? ({
+                  ...msg,
+                  params: { protocolVersion: 1, clientInfo: { name: "renamed", version: "1" } },
+                } as AcpStreamMessage)
+              : msg,
+        },
+      ]),
+      spawnProcess: () => recycledChild,
+    });
+    supervisor.sessionCache.cachedInitializeParams = {
+      protocolVersion: 1,
+      clientInfo: { name: "original", version: "1" },
+    };
+
+    recycledChild.stdin?.on("data", (chunk: Buffer) => {
+      for (const line of chunk.toString("utf-8").split("\n").filter(Boolean)) {
+        const msg = JSON.parse(line) as AcpStreamMessage & { id?: string | number };
+        if ("method" in msg && msg.method === ACP_METHODS.INITIALIZE) sentInitialize.push(msg);
+        void supervisor.handleStdoutLine(
+          JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }),
+        );
+      }
+    });
+
+    const session = getOrCreateSession(supervisor.sessionCache, "session-recycle-init");
+    await supervisor.triggerRecycle(session);
+
+    expect(sentInitialize).toHaveLength(1);
+    expect(
+      (sentInitialize[0] as { params?: { clientInfo?: { name?: string } } }).params?.clientInfo
+        ?.name,
+    ).toBe("renamed");
+
+    supervisor.close();
+  });
+
   it("solution: prompt settlement watchdog terminates turn with end_turn after usage_update when upstream hangs", async () => {
     const { child } = createMockChild();
     const forwarded: AcpStreamMessage[] = [];

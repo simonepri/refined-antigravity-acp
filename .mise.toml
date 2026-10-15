@@ -1,5 +1,5 @@
 [tools]
 actionlint = "1.7.12"
 zizmor = "1.31.0"
-uv = "0.12.22"
+uv = "0.13.1"
 yamllint = "1.38.0"

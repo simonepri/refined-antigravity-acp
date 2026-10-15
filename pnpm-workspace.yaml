@@ -42,3 +42,6 @@ minimumReleaseAgeExclude:
   - "@oxlint/binding-win32-x64-msvc@1.85.0"
   - oxfmt@0.70.0
   - oxlint@1.85.0
+  - "@vitest/mocker@5.0.5"
+  - "@vitest/spy@5.0.5"
+  - vitest@5.0.5

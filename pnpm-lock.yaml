@@ -36,7 +36,7 @@ importers:
         specifier: ^0.3.24
         version: 0.3.25
       typescript:
-        specifier: ^7.0.0
+        specifier: ^7.0.2
         version: 7.0.2
       vitest:
         specifier: ^5.0.1

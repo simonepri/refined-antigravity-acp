@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
-export const DEFAULT_AGY_VERSION = "1.4.0";
+export const DEFAULT_AGY_VERSION = "1.4.1";
 
 export function getAgyVersion(): string {
   return (

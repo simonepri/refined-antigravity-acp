@@ -46,13 +46,8 @@ export function extractContentText(content: unknown): string {
   return extractBlockText(content);
 }
 
-export function isStopIntent(text: string): boolean {
-  return /\b(?:stop|halt|pause|hold\s+on|wait)\b/i.test(text);
-}
-
 interface SessionTurnState {
   activePromptId?: string | number | null | undefined;
-  userAskedToStop: boolean;
   toolCallCount: number;
   assistantTextLength: number;
   continuationCount: number;
@@ -67,7 +62,6 @@ export class PrematureTurnStopTracker {
     let state = this.sessions.get(sessionId);
     if (!state) {
       state = {
-        userAskedToStop: false,
         toolCallCount: 0,
         assistantTextLength: 0,
         continuationCount: 0,
@@ -77,10 +71,9 @@ export class PrematureTurnStopTracker {
     return state;
   }
 
-  startTurn(sessionId: string, promptId?: string | number | null, userAskedToStop = false): void {
+  startTurn(sessionId: string, promptId?: string | number | null): void {
     const state = this.getOrCreate(sessionId);
     state.activePromptId = promptId;
-    state.userAskedToStop = userAskedToStop;
     state.toolCallCount = 0;
     state.assistantTextLength = 0;
     state.continuationCount = 0;
@@ -115,7 +108,6 @@ export class PrematureTurnStopTracker {
       state.activePromptId === promptId || state.continuationPromptId === promptId;
     return (
       isMatchingPrompt &&
-      !state.userAskedToStop &&
       state.toolCallCount > 0 &&
       state.assistantTextLength === 0 &&
       state.continuationCount < maxContinuations
@@ -309,11 +301,7 @@ export function createPrematureTurnStopFix(options: PrematureTurnStopOptions = {
 
       if (isMethod(msg, ACP_METHODS.SESSION_PROMPT)) {
         const promptId = (msg as { id?: string | number }).id;
-        const promptText = extractContentText(
-          (msg as { params?: { prompt?: unknown } })?.params?.prompt,
-        );
-        const askedToStop = isStopIntent(promptText);
-        tracker.startTurn(sessionId, promptId, askedToStop);
+        tracker.startTurn(sessionId, promptId);
       } else if (
         isMethod(msg, ACP_METHODS.SESSION_CANCEL) ||
         isMethod(msg, ACP_METHODS.SESSION_CLOSE) ||

@@ -325,7 +325,7 @@ describe("premature-turn-stop reproduction and verification", () => {
     expect(writtenToChild).toHaveLength(0);
   });
 
-  it("solution: does not trigger continuation when user explicitly asked to stop even after tool calls", async () => {
+  it("solution: triggers continuation even when prompt instructions contain keywords like stop or wait", async () => {
     const fix = createPrematureTurnStopFix();
     const context = createMockContext();
     const writtenToChild: AcpStreamMessage[] = [];
@@ -340,7 +340,12 @@ describe("premature-turn-stop reproduction and verification", () => {
         method: ACP_METHODS.SESSION_PROMPT,
         params: {
           sessionId,
-          prompt: [{ type: "text", text: "Stop and give me a status report" }],
+          prompt: [
+            {
+              type: "text",
+              text: "To wait for the timer, you must stop calling tools to end your turn. make a plan to optimize the mobile view",
+            },
+          ],
         },
       } as unknown as AcpStreamMessage,
       context,
@@ -350,12 +355,17 @@ describe("premature-turn-stop reproduction and verification", () => {
     await fix.onInbound?.(makeToolCall(sessionId, "call_stop_1", "Tool 1"), context);
     await fix.onInbound?.(makeToolCallUpdate(sessionId, "call_stop_1", "completed"), context);
 
-    // Turn completes
+    // Turn completes without text
     const stopResult = makePromptResult(606, "end_turn");
     const result = await fix.onInbound?.(stopResult, context);
 
-    expect(result).toEqual([stopResult]);
-    expect(writtenToChild).toHaveLength(0);
+    // Suppressed and continuation sent
+    expect(result).toEqual([]);
+    expect(writtenToChild).toHaveLength(1);
+    const promptText = (
+      writtenToChild[0] as unknown as { params: { prompt: Array<{ text: string }> } }
+    ).params.prompt[0]?.text;
+    expect(promptText).toContain("[Automated Continuation]");
   });
 
   it("solution: correctly detects assistant text when emitted as an array of content blocks", async () => {

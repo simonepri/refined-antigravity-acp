@@ -4,7 +4,7 @@ import addFormats from "ajv-formats";
 import type { AnyValidateFunction } from "ajv/dist/core.js";
 
 const require = createRequire(import.meta.url);
-const acpSchema = require("@agentclientprotocol/sdk/schema/schema.json");
+const acpSchema = require("@agentclientprotocol/sdk/schema/v1/schema.unstable.json");
 
 interface AjvInstance {
   addFormat: (name: string, format: { type: string; validate: (n: number) => boolean }) => void;

@@ -69,7 +69,7 @@
     "test:e2e": "vitest run -c vitest.e2e.config.ts"
   },
   "devDependencies": {
-    "@agentclientprotocol/sdk": "^1.5.0",
+    "@agentclientprotocol/sdk": "^2.0.0",
     "@sysid/mmdlint": "^0.1.1",
     "@types/node": "^24.3.0",
     "ajv": "^8.20.0",

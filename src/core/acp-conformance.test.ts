@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type * as AcpSdk from "@agentclientprotocol/sdk";
-import { AGENT_METHODS, CLIENT_METHODS, PROTOCOL_METHODS } from "@agentclientprotocol/sdk";
+import { CLIENT_METHODS, PROTOCOL_METHODS } from "@agentclientprotocol/sdk";
+import { AGENT_METHODS } from "@agentclientprotocol/sdk/unstable";
 import { ACP_METHODS, SESSION_UPDATES, STOP_REASONS } from "./types.js";
 import type { SessionPlanEntry, SessionUpdateParams, SessionUpdatePayload } from "./types.js";
 import type { AvailableCommand } from "../fixes/missing-slash-skills/skills.js";

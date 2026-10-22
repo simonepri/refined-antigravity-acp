@@ -167,8 +167,8 @@ importers:
   .:
     devDependencies:
       '@agentclientprotocol/sdk':
-        specifier: ^1.5.0
-        version: 1.9.0(zod@4.6.5)
+        specifier: ^2.0.0
+        version: 2.0.0(zod@4.6.5)
       '@sysid/mmdlint':
         specifier: ^0.1.1
         version: 0.1.1
@@ -202,10 +202,10 @@ importers:
 
 packages:
 
-  '@agentclientprotocol/sdk@1.9.0':
-    resolution: {integrity: sha512-saCOTPYBK1iqWqJFAYHXbg3+zCoFXyZZFoqQAwdTWkbrZZPpAETr80QOnYr2l+dzPwL0jpNhn3eDY8MoEIDbUA==}
+  '@agentclientprotocol/sdk@2.0.0':
+    resolution: {integrity: sha512-Za5gWOPQ44aBOdegDJZ+OjCAPn7POc0cw8BlFJQ1mmUY1OoUWxRi3+QZT4gdZnyEWgKXyfeGRb0Oo1ag9YkQ1w==}
     peerDependencies:
-      zod: ^3.25.0 || ^4.0.0
+      zod: ^3.25.76 || ^4.0.0
 
   '@antfu/install-pkg@2.1.0':
     resolution: {integrity: sha512-sdg9NxU3zR4Mnawfbc/x6GB5Wf17WYud5qOuEuxXjaKpYpMkISSJEjItGebXJ2bQ4DIcly4NYH23mtkGJjvKUw==}
@@ -1645,7 +1645,7 @@ packages:
 
 snapshots:
 
-  '@agentclientprotocol/sdk@1.9.0(zod@4.6.5)':
+  '@agentclientprotocol/sdk@2.0.0(zod@4.6.5)':
     dependencies:
       zod: 4.6.5
 

@@ -55,4 +55,4 @@ minimumReleaseAgeExclude:
   - "@fallow-cli/win32-x64-msvc@3.35.0"
   - fallow-type-aware@3.35.0
   - fallow@3.35.0
-  - "@agentclientprotocol/sdk@2.0.1"
+  - "@agentclientprotocol/sdk@2.0.2"

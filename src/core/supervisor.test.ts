@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { PassThrough } from "node:stream";
 import type { ChildProcess } from "node:child_process";
-import { ACP_METHODS, SESSION_UPDATES, STOP_REASONS, type AcpStreamMessage } from "./types.js";
+import {
+  ACP_METHODS,
+  SESSION_UPDATES,
+  STOP_REASONS,
+  type AcpFix,
+  type AcpStreamMessage,
+} from "./types.js";
 import { AcpPipeline } from "./pipeline.js";
 import { ProcessSupervisor } from "./supervisor.js";
 import { createSessionCache, getOrCreateSession } from "./session-cache.js";
@@ -544,6 +550,115 @@ describe("ProcessSupervisor", () => {
     // No synthetic end_turn should be emitted by default
     const syntheticResponses = forwarded.filter((m) => "id" in m && m.id === 105 && "result" in m);
     expect(syntheticResponses).toHaveLength(0);
+
+    await reader.cancel();
+    supervisor.close();
+  });
+
+  it("solution: forwards child stdout lines in emission order when inbound fixes settle out of order", async () => {
+    const { child, stdout } = createMockChild();
+    const forwarded: AcpStreamMessage[] = [];
+
+    // Inbound fixes typically spend longer on session/update than on responses.
+    const slowUpdates: AcpFix = {
+      name: "slow-updates",
+      onInbound: async (msg) => {
+        if ("method" in msg) await new Promise((resolve) => setTimeout(resolve, 20));
+        return [msg];
+      },
+    };
+
+    const supervisor = new ProcessSupervisor({
+      cmd: "mock-agy",
+      args: [],
+      initialChild: child,
+      pipeline: new AcpPipeline([slowUpdates]),
+    });
+
+    const streams = supervisor.createStreams();
+    const reader = streams.readable.getReader();
+    void (async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) forwarded.push(value);
+      }
+    })();
+
+    const chunk = {
+      jsonrpc: "2.0",
+      method: ACP_METHODS.SESSION_UPDATE,
+      params: {
+        sessionId: "session-order",
+        update: {
+          sessionUpdate: SESSION_UPDATES.AGENT_MESSAGE_CHUNK,
+          content: { type: "text", text: "answer" },
+        },
+      },
+    };
+    const result = { jsonrpc: "2.0", id: 7, result: { stopReason: STOP_REASONS.END_TURN } };
+    stdout.write(JSON.stringify(chunk) + "\n" + JSON.stringify(result) + "\n");
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    // The prompt result must not overtake the text that preceded it.
+    expect(forwarded).toEqual([chunk, result]);
+
+    await reader.cancel();
+    supervisor.close();
+  });
+
+  it("solution: recycle replies bypass the stdout queue while an inbound fix awaits a recycle", async () => {
+    const { child: initialChild, stdout } = createMockChild();
+    const { child: recycledChild, stdout: recycledStdout } = createMockChild();
+    const forwarded: AcpStreamMessage[] = [];
+    const cache = createSessionCache();
+    const session = getOrCreateSession(cache, "session-recover");
+
+    const recoverOnFailure: AcpFix = {
+      name: "recover-on-failure",
+      onInbound: async (msg) => {
+        if ("error" in msg) await supervisor.triggerRecycle(session);
+        return [msg];
+      },
+    };
+
+    const supervisor = new ProcessSupervisor({
+      cmd: "mock-agy",
+      args: [],
+      initialChild,
+      pipeline: new AcpPipeline([recoverOnFailure]),
+      sessionCache: cache,
+      spawnProcess: () => recycledChild,
+      recycleTimeoutMs: 500,
+      recycleSpawnAttempts: 1,
+    });
+
+    recycledChild.stdin?.on("data", (data: Buffer) => {
+      for (const line of data.toString("utf-8").split("\n").filter(Boolean)) {
+        const msg = JSON.parse(line) as { id?: string | number };
+        recycledStdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }) + "\n");
+      }
+    });
+
+    const streams = supervisor.createStreams();
+    const reader = streams.readable.getReader();
+    void (async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) forwarded.push(value);
+      }
+    })();
+
+    const failure = { jsonrpc: "2.0", id: 8, error: { code: -32603, message: "busy" } };
+    stdout.write(JSON.stringify(failure) + "\n");
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(supervisor.currentChild).toBe(recycledChild);
+    expect(supervisor.isClosed).toBe(false);
+    expect(forwarded).toEqual([failure]);
 
     await reader.cancel();
     supervisor.close();

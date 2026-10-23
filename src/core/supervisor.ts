@@ -144,6 +144,7 @@ export class ProcessSupervisor implements CoreContext {
   private readonly pendingRequests = new Map<string | number, PendingInternalRequest>();
   private readonly suppressedResponseIds = new Set<string | number>();
   private activeRecycle: Promise<void> | null = null;
+  private inboundQueue: Promise<void> = Promise.resolve();
   private rlOut: readline.Interface | null = null;
   private rlErr: readline.Interface | null = null;
   private readableController: ReadableStreamDefaultController<AcpStreamMessage> | null = null;
@@ -613,6 +614,25 @@ export class ProcessSupervisor implements CoreContext {
     await this.dispatchInboundPipeline(msg, sessionId, context);
   }
 
+  /**
+   * Handles child stdout lines one at a time. Inbound fixes settle at different
+   * speeds, so concurrent handling lets a prompt result overtake the updates
+   * emitted before it. Lines received while recycling bypass the queue: inbound
+   * fixes may await a recycle, which needs the new child's internal replies, and
+   * every other line is dropped while recycling anyway.
+   */
+  private enqueueStdoutLine(line: string): void {
+    const handle = (): Promise<void> =>
+      this.handleStdoutLine(line).catch((err) => {
+        console.error("[refined-antigravity-acp] Error in handleStdoutLine:", err);
+      });
+    if (this.isRecycling) {
+      void handle();
+      return;
+    }
+    this.inboundQueue = this.inboundQueue.then(handle);
+  }
+
   handleStderrLine(line: string): void {
     const suppressed = this.pipeline.applyStderrLine(line, this.stderrContext);
     if (!suppressed) {
@@ -623,11 +643,7 @@ export class ProcessSupervisor implements CoreContext {
   private bindChild(child: ChildProcess): void {
     if (child.stdout) {
       this.rlOut = readline.createInterface({ input: child.stdout, crlfDelay: Infinity });
-      this.rlOut.on("line", (line) => {
-        this.handleStdoutLine(line).catch((err) => {
-          console.error("[refined-antigravity-acp] Error in handleStdoutLine:", err);
-        });
-      });
+      this.rlOut.on("line", (line) => this.enqueueStdoutLine(line));
     }
 
     if (child.stderr) {

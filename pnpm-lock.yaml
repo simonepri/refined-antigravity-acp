@@ -170,8 +170,8 @@ importers:
         specifier: ^2.0.0
         version: 2.2.0(zod@4.6.5)
       '@sysid/mmdlint':
-        specifier: ^0.1.1
-        version: 0.1.1
+        specifier: ^0.2.0
+        version: 0.2.0
       '@types/node':
         specifier: ^26.0.0
         version: 26.6.6
@@ -660,8 +660,8 @@ packages:
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
-  '@sysid/mmdlint@0.1.1':
-    resolution: {integrity: sha512-f5GBXKsD/xeE8sZ2/BQSkfNspSHKCMM7vgDQzuybitP7OAiSiL0eI1q9VXtAuUM9YL75lLDmFVHSBC4SRrpkBA==}
+  '@sysid/mmdlint@0.2.0':
+    resolution: {integrity: sha512-nKH4tSYO2IXiEb/kCfE0loqKiUsMfiMcHLc1WPRAaGQWN7SSTxWiLbzdLPyeFkve1nuhw27B++e5+dd1o82u6w==}
     engines: {node: '>=20.0.0'}
     hasBin: true
 
@@ -1907,7 +1907,7 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
-  '@sysid/mmdlint@0.1.1':
+  '@sysid/mmdlint@0.2.0':
     dependencies:
       jsdom: 26.1.0
       mermaid: 11.17.2

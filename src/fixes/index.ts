@@ -13,6 +13,7 @@ import { nonCanonicalModeIdsFix } from "./non-canonical-mode-ids/index.js";
 import { silentBackgroundTasksFix } from "./silent-background-tasks/index.js";
 import { cancellationLeakFix } from "./cancellation-leak/index.js";
 import { danglingToolCallsFix } from "./dangling-tool-calls/index.js";
+import { interleavedStreamToolCallsFix } from "./interleaved-stream-tool-calls/index.js";
 import { missingQuestionFallbackFix } from "./missing-question-fallback/index.js";
 import { prematureTurnStopFix } from "./premature-turn-stop/index.js";
 import { repetitiveToolLoopFix } from "./repetitive-tool-loop/index.js";
@@ -36,6 +37,7 @@ export * from "./silent-background-tasks/index.js";
 export * from "./cancellation-leak/index.js";
 export * from "./missing-usage-metrics/index.js";
 export * from "./dangling-tool-calls/index.js";
+export * from "./interleaved-stream-tool-calls/index.js";
 export * from "./missing-question-fallback/index.js";
 export * from "./premature-turn-stop/index.js";
 export * from "./repetitive-tool-loop/index.js";
@@ -60,6 +62,7 @@ export function createDefaultFixes(): AcpFix[] {
     repetitiveToolLoopFix,
     cancellationLeakFix,
     danglingToolCallsFix,
+    interleavedStreamToolCallsFix,
     staleMcpEndpointsFix,
     orphanedCheckpointsFix,
     droppedHistoryChunksFix,

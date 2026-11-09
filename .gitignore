@@ -9,3 +9,4 @@ oauth_creds.json
 .env*
 .gemini/
 .fallow/
+skills/

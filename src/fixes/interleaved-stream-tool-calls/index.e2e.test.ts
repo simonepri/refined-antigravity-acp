@@ -140,4 +140,60 @@ describe("interleaved-stream-tool-calls e2e", () => {
 
     fix.dispose?.();
   });
+
+  it("solution: interleavedStreamToolCallsFix buffers plan updates during active streaming", () => {
+    const fix = createInterleavedStreamToolCallsFix();
+    const sessionId = "sess-e2e-plan";
+    const context = createMockContext();
+
+    const chunk1: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: ACP_METHODS.SESSION_UPDATE,
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: SESSION_UPDATES.AGENT_MESSAGE_CHUNK,
+          content: { type: "text", text: "I have launched task-2829 in background to create " },
+        },
+      },
+    };
+
+    const planUpdate: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: ACP_METHODS.SESSION_UPDATE,
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: SESSION_UPDATES.PLAN,
+          entries: [{ id: "task-2829", title: "create worktree", status: "in_progress" }],
+        },
+      },
+    };
+
+    const chunk2: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: ACP_METHODS.SESSION_UPDATE,
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: SESSION_UPDATES.AGENT_MESSAGE_CHUNK,
+          content: { type: "text", text: ".worktrees/narrow-all-files-diff worktree." },
+        },
+      },
+    };
+
+    const promptResponse: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 202,
+      result: { stopReason: "end_turn" },
+      params: { sessionId },
+    } as unknown as AcpStreamMessage;
+
+    expect(fix.onInbound?.(chunk1, context)).toEqual([chunk1]);
+    expect(fix.onInbound?.(planUpdate, context)).toEqual([]);
+    expect(fix.onInbound?.(chunk2, context)).toEqual([chunk2]);
+    expect(fix.onInbound?.(promptResponse, context)).toEqual([planUpdate, promptResponse]);
+
+    fix.dispose?.();
+  });
 });

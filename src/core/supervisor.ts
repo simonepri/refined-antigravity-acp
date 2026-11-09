@@ -20,6 +20,7 @@ import {
   type SessionUpdateParams,
   type UrlRewriter,
   isJsonRpcResponse,
+  isMethod,
 } from "./types.js";
 import type { AcpPipeline } from "./pipeline.js";
 import {
@@ -199,7 +200,9 @@ export class ProcessSupervisor implements CoreContext {
 
     this.baseContext = {
       sessionCache: this.sessionCache,
-      forwardInbound: (m: AcpStreamMessage) => this.forwardInbound(m),
+      forwardInbound: (m: AcpStreamMessage) => {
+        void this.forwardInboundFromContext(m);
+      },
       writeToChild: (m: AcpStreamMessage) => this.writeToChild(m),
       sendInternalRequest: (m: AcpStreamMessage, t?: number) => this.sendInternalRequest(m, t),
       triggerRecycle: (s: CachedSessionMetadata) => this.triggerRecycle(s),
@@ -213,6 +216,33 @@ export class ProcessSupervisor implements CoreContext {
     this.stderrContext = this.baseContext;
 
     this.bindChild(this.currentChild);
+  }
+
+  private async forwardInboundFromContext(msg: AcpStreamMessage): Promise<void> {
+    if ((msg as { _raw?: boolean })._raw) {
+      delete (msg as { _raw?: boolean })._raw;
+      this.forwardInbound(msg);
+      return;
+    }
+    if (!isMethod(msg, ACP_METHODS.SESSION_UPDATE)) {
+      this.forwardInbound(msg);
+      return;
+    }
+    const sessionId = extractSessionId(msg);
+    const session = sessionId ? getSession(this.sessionCache, sessionId) : undefined;
+    const context = this.createContext(session);
+    try {
+      const messages = await this.pipeline.applyInbound(msg, context);
+      for (const m of messages) {
+        this.forwardInbound(m);
+      }
+    } catch (err) {
+      console.error(
+        "[refined-antigravity-acp] Context inbound handling failed; forwarding raw message:",
+        err,
+      );
+      this.forwardInbound(msg);
+    }
   }
 
   setController(controller: ReadableStreamDefaultController<AcpStreamMessage>): void {
@@ -309,14 +339,14 @@ export class ProcessSupervisor implements CoreContext {
       result: { stopReason: STOP_REASONS.END_TURN },
     } as unknown as AcpStreamMessage;
 
-    this.forwardInbound(syntheticMsg);
-
     const session = getSession(this.sessionCache, sessionId);
     const context = this.createContext(session);
     const turnEndMessages = this.pipeline.applyTurnEnd(sessionId, context);
     for (const m of turnEndMessages) {
       this.forwardInbound(m);
     }
+
+    this.forwardInbound(syntheticMsg);
   }
 
   async triggerRecycle(session: CachedSessionMetadata): Promise<void> {

@@ -1,15 +1,16 @@
 /**
  * Problem:
- * When background subagents execute tool calls concurrently while an assistant message is streaming
- * (or when concurrent tool calls arrive during `agent_message_chunk` emissions), upstream `agy_acp_server`
- * pushes `tool_call` and `tool_call_update` events directly into the middle of the streaming text.
- * Editor clients (such as Paseo and Zed) render ACP streams sequentially, splitting the assistant
- * message into broken fragments and severing Markdown links/syntax mid-token.
+ * When background subagents or tasks execute concurrently while an assistant message is streaming
+ * (or when tool calls, plan updates, or notices arrive during `agent_message_chunk` emissions),
+ * upstream `agy_acp_server` pushes these timeline-interrupting events directly into the middle of
+ * the streaming text. Editor clients (such as Paseo and Zed) render ACP streams sequentially,
+ * splitting the assistant message into broken fragments and severing Markdown links/syntax mid-token.
  *
  * Solution:
- * Buffers incoming concurrent `tool_call` and `tool_call_update` events while an assistant message
- * is actively streaming, flushing them immediately once the text stream completes (or settles),
- * ensuring text messages remain contiguous and unsevered.
+ * Buffers incoming concurrent timeline updates (`tool_call`, `tool_call_update`, `plan`,
+ * `plan_update`, `plan_removed`, `notice`) while an assistant message is actively streaming,
+ * flushing them immediately once the text stream completes (or settles), ensuring text messages
+ * remain contiguous and unsevered.
  */
 
 import {
@@ -24,7 +25,7 @@ import {
   type SessionUpdateParams,
   type SessionUpdatePayload,
 } from "../../core/types.js";
-import { extractSessionId } from "../../core/session-cache.js";
+import { extractSessionId, getSessionIdForRequest } from "../../core/session-cache.js";
 
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 150;
 
@@ -37,6 +38,18 @@ interface SessionStreamState {
   idleTimer?: ReturnType<typeof setTimeout> | undefined;
   bufferedMessages: AcpStreamMessage[];
   bufferedToolCallIds: Set<string>;
+}
+
+export function isTimelineInterruptingUpdate(kind?: string): boolean {
+  if (!kind) return false;
+  return (
+    kind === SESSION_UPDATES.TOOL_CALL ||
+    kind === SESSION_UPDATES.TOOL_CALL_UPDATE ||
+    kind === SESSION_UPDATES.PLAN ||
+    kind === SESSION_UPDATES.PLAN_UPDATE ||
+    kind === SESSION_UPDATES.PLAN_REMOVED ||
+    kind === SESSION_UPDATES.NOTICE
+  );
 }
 
 export class ConcurrentToolCallBuffer {
@@ -99,6 +112,7 @@ export class ConcurrentToolCallBuffer {
     const flushed = this.flush(sessionId);
     if (context && flushed.length > 0) {
       for (const m of flushed) {
+        (m as { _raw?: boolean })._raw = true;
         context.forwardInbound(m);
       }
       return [];
@@ -106,7 +120,7 @@ export class ConcurrentToolCallBuffer {
     return flushed;
   }
 
-  bufferToolCall(sessionId: string, msg: AcpStreamMessage, toolCallId?: string): void {
+  bufferTimelineUpdate(sessionId: string, msg: AcpStreamMessage, toolCallId?: string): void {
     const state = this.getOrCreateState(sessionId);
     state.bufferedMessages.push(msg);
     if (toolCallId) {
@@ -151,27 +165,37 @@ export class ConcurrentToolCallBuffer {
   }
 }
 
-function handleToolUpdate(
+function handleTimelineUpdate(
   msg: AcpStreamMessage,
   update: SessionUpdatePayload,
   sessionId: string,
   buffer: ConcurrentToolCallBuffer,
 ): AcpStreamMessage[] {
-  if (update.sessionUpdate === SESSION_UPDATES.TOOL_CALL) {
+  const kind = update.sessionUpdate;
+  if (!isTimelineInterruptingUpdate(kind)) {
+    return [msg];
+  }
+
+  if (kind === SESSION_UPDATES.TOOL_CALL) {
     if (buffer.isStreaming(sessionId)) {
-      buffer.bufferToolCall(sessionId, msg, update.toolCallId);
+      buffer.bufferTimelineUpdate(sessionId, msg, update.toolCallId);
       return [];
     }
     return [msg];
   }
 
-  if (update.sessionUpdate === SESSION_UPDATES.TOOL_CALL_UPDATE) {
+  if (kind === SESSION_UPDATES.TOOL_CALL_UPDATE) {
     const toolCallId = update.toolCallId;
     if (toolCallId && buffer.isToolCallBuffered(sessionId, toolCallId)) {
-      buffer.bufferToolCall(sessionId, msg, toolCallId);
+      buffer.bufferTimelineUpdate(sessionId, msg, toolCallId);
       return [];
     }
     return [msg];
+  }
+
+  if (buffer.isStreaming(sessionId)) {
+    buffer.bufferTimelineUpdate(sessionId, msg);
+    return [];
   }
 
   return [msg];
@@ -198,7 +222,17 @@ function handleSessionUpdate(
     return [msg];
   }
 
-  return handleToolUpdate(msg, update, sessionId, buffer);
+  return handleTimelineUpdate(msg, update, sessionId, buffer);
+}
+
+function resolveSessionId(msg: AcpStreamMessage, context: InboundContext): string | undefined {
+  return (
+    extractSessionId(msg) ??
+    context.session?.sessionId ??
+    (context.sessionCache && "id" in msg && msg.id !== undefined && msg.id !== null
+      ? getSessionIdForRequest(context.sessionCache, msg.id)
+      : undefined)
+  );
 }
 
 export function createInterleavedStreamToolCallsFix(
@@ -209,13 +243,13 @@ export function createInterleavedStreamToolCallsFix(
   return {
     name: "interleaved-stream-tool-calls",
     description:
-      "Buffers concurrent subagent and background tool calls while assistant text is streaming to avoid broken markdown and conversation splitting",
+      "Buffers concurrent subagent tool calls and background plan updates while assistant text is streaming to avoid broken markdown and conversation splitting",
 
-    onOutbound(msg: AcpStreamMessage, _context: OutboundContext): AcpStreamMessage {
+    onOutbound(msg: AcpStreamMessage, context: OutboundContext): AcpStreamMessage {
       if (isMethod(msg, ACP_METHODS.SESSION_PROMPT) || isMethod(msg, ACP_METHODS.SESSION_CANCEL)) {
         const sessionId = extractSessionId(msg);
         if (sessionId) {
-          buffer.settleStream(sessionId);
+          buffer.settleStream(sessionId, context as unknown as InboundContext);
         }
       }
       return msg;
@@ -223,7 +257,7 @@ export function createInterleavedStreamToolCallsFix(
 
     onInbound(msg: AcpStreamMessage, context: InboundContext): AcpStreamMessage[] {
       if (isJsonRpcResponse(msg)) {
-        const sessionId = extractSessionId(msg);
+        const sessionId = resolveSessionId(msg, context);
         if (sessionId) {
           const flushed = buffer.clear(sessionId);
           return [...flushed, msg];

@@ -64,6 +64,37 @@ function makeToolCallUpdateMessage(
   };
 }
 
+function makePlanMessage(
+  sessionId: string,
+  entries: Array<{ id: string; title: string; status: string }>,
+): AcpStreamMessage {
+  return {
+    jsonrpc: "2.0",
+    method: ACP_METHODS.SESSION_UPDATE,
+    params: {
+      sessionId,
+      update: {
+        sessionUpdate: SESSION_UPDATES.PLAN,
+        entries,
+      },
+    },
+  };
+}
+
+function makeNoticeMessage(sessionId: string, message: string): AcpStreamMessage {
+  return {
+    jsonrpc: "2.0",
+    method: ACP_METHODS.SESSION_UPDATE,
+    params: {
+      sessionId,
+      update: {
+        sessionUpdate: SESSION_UPDATES.NOTICE,
+        message,
+      },
+    },
+  };
+}
+
 function makePromptSuccessResponse(promptId: string | number, sessionId: string): AcpStreamMessage {
   return {
     jsonrpc: "2.0",
@@ -308,6 +339,78 @@ describe("interleaved-stream-tool-calls solution verification", () => {
     const toolA = makeToolCallMessage("sessA", "call_A", "view_file", { AbsolutePath: "a.txt" });
     const outA = fix.onInbound?.(toolA, mockContext);
     expect(outA).toEqual([]);
+
+    fix.dispose?.();
+  });
+
+  it("solution: buffers background task plan updates during active assistant text streaming", () => {
+    const forwarded: AcpStreamMessage[] = [];
+    const mockContext = createMockContext({
+      forwardInbound: (msg) => forwarded.push(msg),
+    });
+
+    const fix = createInterleavedStreamToolCallsFix({ idleTimeoutMs: 200 });
+    const sessionId = "s1";
+
+    // Text chunk 1 arrives (e.g. "I launched background task to create .worktrees")
+    const chunk1 = makeMessageChunk(sessionId, "I launched background task to create .worktrees");
+    const outChunk1 = fix.onInbound?.(chunk1, mockContext);
+    expect(outChunk1).toEqual([chunk1]);
+
+    // Background task plan update arrives concurrently while assistant text is streaming
+    const planMsg = makePlanMessage(sessionId, [
+      { id: "task-2829", title: "create worktree", status: "in_progress" },
+    ]);
+    const outPlan = fix.onInbound?.(planMsg, mockContext);
+    // Crucial: plan message must be buffered, not emitted mid-stream!
+    expect(outPlan).toEqual([]);
+
+    // Text chunk 2 arrives (e.g. "/narrow-all-files-diff worktree...")
+    const chunk2 = makeMessageChunk(sessionId, "/narrow-all-files-diff worktree...");
+    const outChunk2 = fix.onInbound?.(chunk2, mockContext);
+    expect(outChunk2).toEqual([chunk2]);
+
+    // Stream settles via idle timeout
+    vi.advanceTimersByTime(200);
+
+    // Plan update is flushed without splitting the text chunks
+    expect(forwarded).toEqual([planMsg]);
+
+    fix.dispose?.();
+  });
+
+  it("solution: buffers notice updates during active assistant text streaming", () => {
+    const forwarded: AcpStreamMessage[] = [];
+    const mockContext = createMockContext({
+      forwardInbound: (msg) => forwarded.push(msg),
+    });
+
+    const fix = createInterleavedStreamToolCallsFix({ idleTimeoutMs: 200 });
+    const sessionId = "s1";
+
+    const chunk1 = makeMessageChunk(sessionId, "Processing data...");
+    fix.onInbound?.(chunk1, mockContext);
+
+    const notice = makeNoticeMessage(sessionId, "Compacting context...");
+    const outNotice = fix.onInbound?.(notice, mockContext);
+    expect(outNotice).toEqual([]);
+
+    vi.advanceTimersByTime(200);
+    expect(forwarded).toEqual([notice]);
+
+    fix.dispose?.();
+  });
+
+  it("solution: does not buffer plan updates when stream is inactive", () => {
+    const mockContext = createMockContext();
+    const fix = createInterleavedStreamToolCallsFix();
+    const sessionId = "s1";
+
+    const planMsg = makePlanMessage(sessionId, [
+      { id: "task-1", title: "task 1", status: "completed" },
+    ]);
+    const out = fix.onInbound?.(planMsg, mockContext);
+    expect(out).toEqual([planMsg]);
 
     fix.dispose?.();
   });

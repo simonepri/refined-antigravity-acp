@@ -48,6 +48,13 @@ export function resolveResponseSession(
   return sessionId;
 }
 
+export function getSessionIdForRequest(
+  cache: SessionCache,
+  id: string | number,
+): string | undefined {
+  return cache.pendingRequestSessions.get(id);
+}
+
 export function extractSessionId(msg: AcpStreamMessage): string | undefined {
   if (!("params" in msg) || !msg.params || typeof msg.params !== "object") return undefined;
   const params = msg.params as { sessionId?: unknown };

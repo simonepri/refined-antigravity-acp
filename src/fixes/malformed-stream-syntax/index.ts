@@ -117,23 +117,39 @@ function findLeadingWhitespaceStart(input: string, fromIdx: number): number {
   return startIdx;
 }
 
-function isLineStartCandidate(input: string, idx: number, char: string): boolean {
-  if (input[idx]?.toLowerCase() !== char.toLowerCase()) return false;
-  if (idx === 0) return true;
-  let prev = idx - 1;
-  while (prev >= 0 && (input[prev] === " " || input[prev] === "\t")) {
-    prev--;
+function findLastNonWhitespace(str: string, fromIdx: number): string | null {
+  let idx = fromIdx;
+  while (idx >= 0 && (str[idx] === " " || str[idx] === "\t")) {
+    idx--;
   }
-  return prev < 0 || input[prev] === "\n" || input[prev] === "\r";
+  return idx >= 0 ? (str[idx] ?? null) : null;
 }
 
-function isBannerCandidateStart(input: string, tIdx: number): boolean {
-  return isLineStartCandidate(input, tIdx, "t");
+function checkIsLineStart(
+  input: string,
+  idx: number,
+  output: string,
+  atLineStart: boolean,
+): boolean {
+  const inputPrev = findLastNonWhitespace(input, idx - 1);
+  if (inputPrev !== null) {
+    return inputPrev === "\n" || inputPrev === "\r";
+  }
+  const outputPrev = findLastNonWhitespace(output, output.length - 1);
+  if (outputPrev !== null) {
+    return outputPrev === "\n" || outputPrev === "\r";
+  }
+  return atLineStart;
 }
 
-function checkBannerPartialPrefix(input: string): number | null {
+function checkBannerPartialPrefix(
+  input: string,
+  output: string,
+  atLineStart: boolean,
+): number | null {
   for (let tIdx = 0; tIdx < input.length; tIdx++) {
-    if (!isBannerCandidateStart(input, tIdx)) continue;
+    if (input[tIdx]?.toLowerCase() !== "t") continue;
+    if (!checkIsLineStart(input, tIdx, output, atLineStart)) continue;
 
     const candidate = input.slice(tIdx).toLowerCase();
     if (SYSTEM_MSG_INTRO_LOWER.startsWith(candidate)) {
@@ -154,19 +170,33 @@ const BG_TASK_INTROS_LOWER = [
   BG_SUBAGENT_FINISHED_INTRO_LOWER,
 ] as const;
 
-function isBgTaskCandidateStart(input: string, idx: number): boolean {
-  const ch = input[idx];
-  if (!ch) return false;
-  const lower = ch.toLowerCase();
-  if (lower === "g" || lower === "b" || lower === "s" || ch === "." || ch === "\u2026") {
-    return isLineStartCandidate(input, idx, ch);
-  }
-  return false;
+function isEllipsisPrefix(input: string, idx: number): boolean {
+  const slice = input.slice(idx, idx + 3);
+  if (slice.length === 3) return slice === "...";
+  if (slice.length === 2) return slice === "..";
+  return true;
 }
 
-function checkBgTaskPartialPrefix(input: string): number | null {
+function isBgCandidateChar(ch: string): boolean {
+  const lower = ch.toLowerCase();
+  return lower === "g" || lower === "b" || lower === "s" || ch === "\u2026";
+}
+
+function isBgTaskCandidate(input: string, idx: number): boolean {
+  const ch = input[idx];
+  if (!ch) return false;
+  if (ch === ".") return isEllipsisPrefix(input, idx);
+  return isBgCandidateChar(ch);
+}
+
+function checkBgTaskPartialPrefix(
+  input: string,
+  output: string,
+  atLineStart: boolean,
+): number | null {
   for (let idx = 0; idx < input.length; idx++) {
-    if (!isBgTaskCandidateStart(input, idx)) continue;
+    if (!isBgTaskCandidate(input, idx)) continue;
+    if (!checkIsLineStart(input, idx, output, atLineStart)) continue;
 
     const candidate = input.slice(idx).toLowerCase();
     if (BG_TASK_INTROS_LOWER.some((intro) => intro.startsWith(candidate))) {
@@ -176,12 +206,16 @@ function checkBgTaskPartialPrefix(input: string): number | null {
   return null;
 }
 
-function checkBgTaskPartialHeader(input: string): number | null {
+function checkBgTaskPartialHeader(
+  input: string,
+  output: string,
+  atLineStart: boolean,
+): number | null {
   const match = input.match(BG_TASK_PARTIAL_HEADER_RE);
   if (match && match.index !== undefined) {
     return findLeadingWhitespaceStart(input, match.index);
   }
-  return checkBgTaskPartialPrefix(input);
+  return checkBgTaskPartialPrefix(input, output, atLineStart);
 }
 
 const ANY_TAG_RE = /<\s*(\/?)\s*([a-zA-Z0-9_-]+)(?:\s+[^>]*)?>/i;
@@ -189,6 +223,7 @@ const ANY_TAG_RE = /<\s*(\/?)\s*([a-zA-Z0-9_-]+)(?:\s+[^>]*)?>/i;
 export class StreamSanitizer {
   private harnessStack: string[] = [];
   private buffer = "";
+  private atLineStart = true;
   private inBackgroundTask = false;
   private inCodeFence = false;
   private fenceLength = 3;
@@ -202,6 +237,7 @@ export class StreamSanitizer {
   reset(): void {
     this.harnessStack = [];
     this.buffer = "";
+    this.atLineStart = true;
     this.inBackgroundTask = false;
     this.inCodeFence = false;
     this.fenceLength = 3;
@@ -368,6 +404,13 @@ export class StreamSanitizer {
     };
   }
 
+  private updateLineStartState(text: string): void {
+    const lastChar = findLastNonWhitespace(text, text.length - 1);
+    if (lastChar !== null) {
+      this.atLineStart = lastChar === "\n" || lastChar === "\r";
+    }
+  }
+
   process(chunk: string): string {
     let input = this.buffer + chunk;
     this.buffer = "";
@@ -381,8 +424,12 @@ export class StreamSanitizer {
         continue;
       }
 
-      const banner = this.checkBannerOrSystemMessage(input);
-      if (banner.buffered) return output + banner.output;
+      const banner = this.checkBannerOrSystemMessage(input, output);
+      if (banner.buffered) {
+        const res = output + banner.output;
+        this.updateLineStartState(res);
+        return res;
+      }
       if (banner.remainder !== input) {
         output += banner.output;
         input = banner.remainder;
@@ -391,10 +438,14 @@ export class StreamSanitizer {
 
       const token = this.processNextToken(input, output);
       output += token.output;
-      if (token.buffered) return output;
+      if (token.buffered) {
+        this.updateLineStartState(output);
+        return output;
+      }
       input = token.remainder;
     }
 
+    this.updateLineStartState(output);
     return output;
   }
 
@@ -417,6 +468,7 @@ export class StreamSanitizer {
     ) {
       return "";
     }
+    this.updateLineStartState(remaining);
     return remaining;
   }
 
@@ -435,7 +487,10 @@ export class StreamSanitizer {
     return input.slice(footerMatch.index + footerMatch[0].length);
   }
 
-  private checkBannerOrSystemMessage(input: string): {
+  private checkBannerOrSystemMessage(
+    input: string,
+    output: string,
+  ): {
     output: string;
     remainder: string;
     buffered: boolean;
@@ -455,8 +510,8 @@ export class StreamSanitizer {
       return { output: sysResult.outputPrefix, remainder: sysResult.remainder, buffered: false };
     }
 
-    const idx1 = checkBannerPartialPrefix(input);
-    const idx2 = checkBgTaskPartialHeader(input);
+    const idx1 = checkBannerPartialPrefix(input, output, this.atLineStart);
+    const idx2 = checkBgTaskPartialHeader(input, output, this.atLineStart);
     const bannerIdx = idx1 !== null && idx2 !== null ? Math.min(idx1, idx2) : (idx1 ?? idx2);
     if (bannerIdx !== null) {
       this.buffer = input.slice(bannerIdx);
@@ -626,15 +681,76 @@ export const STREAM_SANITIZATION_INSTRUCTIONS: readonly string[] = [
   "In Mermaid diagrams, only use supported diagram types: flowchart, sequenceDiagram, stateDiagram-v2, classDiagram, erDiagram, xychart-beta (do not use unsupported types like gantt or gitGraph). Quote node labels containing special characters like parentheses.",
 ];
 
+interface FixState {
+  sanitizer: StreamSanitizer;
+  lastSessionId: string | null;
+  lastUpdateType: string | null;
+}
+
+function flushPendingTail(
+  state: FixState,
+  msg: AcpStreamMessage,
+  keep: boolean,
+): AcpStreamMessage[] {
+  const tail = state.sanitizer.flush();
+  if (tail && state.lastSessionId) {
+    const chunk = agentMessageChunk(state.lastSessionId, tail);
+    return keep ? [chunk, msg] : [chunk];
+  }
+  return keep ? [msg] : [];
+}
+
+function checkThoughtToMessageTransition(state: FixState, updateType?: string): void {
+  if (
+    state.lastUpdateType === SESSION_UPDATES.AGENT_THOUGHT_CHUNK &&
+    updateType === SESSION_UPDATES.AGENT_MESSAGE_CHUNK
+  ) {
+    state.sanitizer.reset();
+  }
+}
+
+function handleSessionUpdate(msg: AcpStreamMessage, state: FixState): AcpStreamMessage[] {
+  const sessionId = extractSessionId(msg);
+  if (sessionId) state.lastSessionId = sessionId;
+
+  const params = "params" in msg ? (msg.params as SessionUpdateParams | undefined) : undefined;
+  const updateType = params?.update?.sessionUpdate;
+  checkThoughtToMessageTransition(state, updateType);
+
+  const isTextChunk =
+    updateType === SESSION_UPDATES.AGENT_MESSAGE_CHUNK ||
+    updateType === SESSION_UPDATES.AGENT_THOUGHT_CHUNK;
+
+  if (updateType && !isTextChunk) {
+    state.lastUpdateType = updateType;
+    const keep = sanitizeInboundText(msg, state.sanitizer);
+    return flushPendingTail(state, msg, keep);
+  }
+
+  if (updateType) state.lastUpdateType = updateType;
+  const keep = sanitizeInboundText(msg, state.sanitizer);
+  return keep ? [msg] : [];
+}
+
+function handleResult(msg: AcpStreamMessage, state: FixState): AcpStreamMessage[] {
+  const tail = state.sanitizer.flush();
+  state.sanitizer.reset();
+  state.lastUpdateType = null;
+  return tail && state.lastSessionId ? [agentMessageChunk(state.lastSessionId, tail), msg] : [msg];
+}
+
 export function createMalformedStreamSyntaxFix(): AcpFix & { sanitizer: StreamSanitizer } {
-  const sanitizer = new StreamSanitizer();
-  let lastSessionId: string | null = null;
+  const state: FixState = {
+    sanitizer: new StreamSanitizer(),
+    lastSessionId: null,
+    lastUpdateType: null,
+  };
 
   return {
     name: "malformed-stream-syntax",
     description:
       "Sanitizes unquoted Mermaid diagram labels, LaTeX math escapes, and leaked system tags across streaming chunks",
-    sanitizer,
+    sanitizer: state.sanitizer,
 
     onOutbound(msg: AcpStreamMessage): AcpStreamMessage {
       if (
@@ -643,33 +759,26 @@ export function createMalformedStreamSyntaxFix(): AcpFix & { sanitizer: StreamSa
         isMethod(msg, ACP_METHODS.SESSION_NEW) ||
         isMethod(msg, ACP_METHODS.SESSION_LOAD)
       ) {
-        sanitizer.reset();
+        state.sanitizer.reset();
+        state.lastUpdateType = null;
       }
       return msg;
     },
 
     onInbound(msg: AcpStreamMessage): AcpStreamMessage[] {
       if (isMethod(msg, ACP_METHODS.SESSION_UPDATE)) {
-        const sessionId = extractSessionId(msg);
-        if (sessionId) {
-          lastSessionId = sessionId;
-        }
-        const keep = sanitizeInboundText(msg, sanitizer);
-        return keep ? [msg] : [];
+        return handleSessionUpdate(msg, state);
       }
-
       if ("result" in msg && msg.result) {
-        const tail = sanitizer.flush();
-        sanitizer.reset();
-        return tail && lastSessionId ? [agentMessageChunk(lastSessionId, tail), msg] : [msg];
+        return handleResult(msg, state);
       }
-
       return [msg];
     },
 
     onTurnEnd(sessionId: string): AcpStreamMessage[] {
-      const tail = sanitizer.flush();
-      sanitizer.reset();
+      const tail = state.sanitizer.flush();
+      state.sanitizer.reset();
+      state.lastUpdateType = null;
       return tail ? [agentMessageChunk(sessionId, tail)] : [];
     },
 
@@ -678,8 +787,9 @@ export function createMalformedStreamSyntaxFix(): AcpFix & { sanitizer: StreamSa
     },
 
     dispose(): void {
-      sanitizer.reset();
-      lastSessionId = null;
+      state.sanitizer.reset();
+      state.lastSessionId = null;
+      state.lastUpdateType = null;
     },
   };
 }

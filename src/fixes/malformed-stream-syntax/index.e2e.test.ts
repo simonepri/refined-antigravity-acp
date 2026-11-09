@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { AcpStreamMessage } from "../../core/types.js";
 import { spawnWrapped, type AcpTestClient } from "../../test-utils/index.js";
+import { StreamSanitizer } from "./index.js";
 
 interface UpdateContent {
   text?: string;
@@ -148,5 +149,23 @@ Task output:
       "Background task 'f1914418-7ae0-4f1d-bb7a-0187b25f5786/task-214' has finished.",
     );
     expect(rawOutput).toContain("[INFO] Scanning for projects...");
+  });
+
+  it("problem: raw candidate matching buffers trailing dot after inline code as background task prefix", () => {
+    // Demonstrates how matching single '.' as background task prefix buffers the dot
+    const intro = "... resuming execution after task execution ...";
+    const candidate = ".";
+    expect(intro.startsWith(candidate)).toBe(true);
+  });
+
+  it("solution: stream sanitizer preserves trailing dot without buffering across turns", () => {
+    const sanitizer = new StreamSanitizer();
+    const c1 = sanitizer.process("replying to `F6` and `F7");
+    const c2 = sanitizer.process("`.");
+    const c3 = sanitizer.process("I have pushed commit 912819c30");
+
+    expect(c1).toBe("replying to `F6` and `F7");
+    expect(c2).toBe("`.");
+    expect(c3).toBe("I have pushed commit 912819c30");
   });
 });

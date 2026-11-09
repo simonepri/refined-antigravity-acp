@@ -150,6 +150,24 @@ describe("StreamSanitizer", () => {
     output += sanitizer.flush();
     expect(output).toBe(chunks.join(""));
   });
+
+  it("does not buffer trailing period after inline code backtick (e.g. '`F7`.')", () => {
+    const sanitizer = new StreamSanitizer();
+    expect(sanitizer.process("replying to `F6` and `F7")).toBe("replying to `F6` and `F7");
+    expect(sanitizer.process("`.")).toBe("`.");
+    expect(sanitizer.flush()).toBe("");
+    expect(sanitizer.process("I have pushed commit 912819c30")).toBe(
+      "I have pushed commit 912819c30",
+    );
+  });
+
+  it("does not buffer trailing period at end of sentences in streaming chunks", () => {
+    const sanitizer = new StreamSanitizer();
+    expect(sanitizer.process("I will wait for it to finish.")).toBe(
+      "I will wait for it to finish.",
+    );
+    expect(sanitizer.flush()).toBe("");
+  });
 });
 
 describe("streamSanitizationFix", () => {
@@ -227,6 +245,59 @@ describe("streamSanitizationFix", () => {
         expect.stringContaining("Mermaid diagrams"),
       ]),
     );
+  });
+
+  it("flushes pending buffer before tool call updates so trailing text is not held across turns", () => {
+    const fix = createStreamSanitizationFix();
+    const mockCtx = createMockContext();
+
+    // Stream text chunk
+    fix.onInbound?.(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s1",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "Starting build now" },
+          },
+        },
+      } as unknown as AcpStreamMessage,
+      mockCtx,
+    );
+
+    // Simulate trailing buffer (e.g. unclosed backtick)
+    fix.sanitizer.process("`");
+
+    // Tool call arrives
+    const toolMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s1",
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "tc-1",
+          name: "run_command",
+        },
+      },
+    } as unknown as AcpStreamMessage;
+
+    const result = fix.onInbound?.(toolMsg, mockCtx) as AcpStreamMessage[];
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "s1",
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "`" },
+        },
+      },
+    });
+    expect(result[1]).toBe(toolMsg);
   });
 });
 

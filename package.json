@@ -1,6 +1,6 @@
 {
   "name": "@simonepri/refined-antigravity-acp",
-  "version": "1.6.5",
+  "version": "1.6.6",
   "description": "🤦 A Google Antigravity ACP binary that actually works.",
   "keywords": [
     "acp",

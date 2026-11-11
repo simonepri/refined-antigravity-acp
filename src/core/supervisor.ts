@@ -552,13 +552,40 @@ export class ProcessSupervisor implements CoreContext {
     trackPendingRequestSession(this.sessionCache, msg.id, sessionId);
   }
 
-  private async prepareOutboundSession(session?: CachedSessionMetadata): Promise<boolean> {
+  private rejectOutboundRequest(msg: AcpStreamMessage, message: string): void {
+    if ("id" in msg && msg.id !== undefined && msg.id !== null) {
+      this.forwardInbound({
+        jsonrpc: "2.0",
+        id: msg.id,
+        error: {
+          code: -32603,
+          message,
+        },
+      });
+    }
+  }
+
+  private async prepareOutboundSession(
+    msg: AcpStreamMessage,
+    session?: CachedSessionMetadata,
+  ): Promise<boolean> {
     if (this.activeRecycle) {
-      await this.activeRecycle;
+      await this.activeRecycle.catch(() => {});
       if (this.isClosed) return false;
     }
     if (session?.needsRecycle) {
-      await this.triggerRecycle(session);
+      await this.triggerRecycle(session).catch(() => {});
+    }
+    if (session?.needsRecycle) {
+      this.rejectOutboundRequest(
+        msg,
+        `Agent process recovery failed for session ${session.sessionId}. Please retry the prompt.`,
+      );
+      return false;
+    }
+    if (!this.currentChild?.stdin?.writable) {
+      this.rejectOutboundRequest(msg, "Agent process is not running. Please restart the session.");
+      return false;
     }
     return !this.isClosed;
   }
@@ -570,7 +597,7 @@ export class ProcessSupervisor implements CoreContext {
     this.recordOutboundMetadata(msg);
     const sessionId = extractSessionId(msg);
     const session = getSession(this.sessionCache, sessionId);
-    const ready = await this.prepareOutboundSession(session);
+    const ready = await this.prepareOutboundSession(msg, session);
     if (!ready) return;
 
     const context = this.createContext(session, proxies);
@@ -706,8 +733,12 @@ export class ProcessSupervisor implements CoreContext {
       this.rlErr.on("line", (line) => this.handleStderrLine(line));
     }
 
-    child.on("close", () => this.handleChildClose());
-    child.on("error", (err) => this.handleChildClose(err));
+    child.on("close", () => {
+      if (this.currentChild === child) this.handleChildClose();
+    });
+    child.on("error", (err) => {
+      if (this.currentChild === child) this.handleChildClose(err);
+    });
   }
 
   private rejectPendingRequests(err?: Error): void {
@@ -837,14 +868,44 @@ export class ProcessSupervisor implements CoreContext {
     await this.resyncSessionConfig(session, context);
   }
 
-  private cleanupOldChild(): void {
+  private killChildProcess(child: ChildProcess): void {
+    try {
+      if (child.pid) {
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+          child.kill("SIGKILL");
+        }
+      } else {
+        child.kill("SIGKILL");
+      }
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ESRCH") {
+        throw err;
+      }
+    }
+  }
+
+  private async cleanupOldChild(): Promise<void> {
     const oldChild = this.currentChild;
+    if (oldChild) {
+      oldChild.removeAllListeners("close");
+      oldChild.removeAllListeners("error");
+    }
     this.rlOut?.close();
     this.rlErr?.close();
     this.rlOut = null;
     this.rlErr = null;
-    if (oldChild && !oldChild.killed) {
-      oldChild.kill("SIGKILL");
+    if (oldChild && oldChild.exitCode === null && oldChild.signalCode === null) {
+      this.killChildProcess(oldChild);
+      await new Promise<void>((resolve) => {
+        if (oldChild.exitCode !== null || oldChild.signalCode !== null) return resolve();
+        const timer = setTimeout(resolve, 300);
+        oldChild.once("exit", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
     }
     this.suppressedResponseIds.clear();
     clearPendingRequestSessions(this.sessionCache);
@@ -856,7 +917,7 @@ export class ProcessSupervisor implements CoreContext {
 
     let lastErr: unknown;
     for (let attempt = 1; attempt <= this.recycleSpawnAttempts; attempt++) {
-      this.cleanupOldChild();
+      await this.cleanupOldChild();
       try {
         const newChild = await this.spawnFn(this.cmd, this.args);
         this.currentChild = newChild;
@@ -888,17 +949,17 @@ export class ProcessSupervisor implements CoreContext {
   }
 
   /**
-   * Gives up on recycling after every spawn attempt failed: tears down whatever
-   * child is left and fatally closes the stream with a clear, aggregated error
-   * instead of leaving callers to interpret a raw timeout from the last attempt.
+   * Cleans up after all recycle attempts fail without tearing down the top-level
+   * ACP stream. Leaves session.needsRecycle=true so callers can reject the active
+   * prompt cleanly with a JSON-RPC error instead of crashing the proxy process.
    */
   private failRecycle(session: CachedSessionMetadata, err: unknown): never {
-    this.isClosed = true;
-    this.pipeline.dispose();
-    this.rlErr?.close();
-    this.rlOut?.close();
-    if (this.currentChild && !this.currentChild.killed) {
-      this.currentChild.kill("SIGKILL");
+    if (this.currentChild) {
+      this.currentChild.removeAllListeners("close");
+      this.currentChild.removeAllListeners("error");
+      if (this.currentChild.exitCode === null && this.currentChild.signalCode === null) {
+        this.killChildProcess(this.currentChild);
+      }
     }
 
     const reason = err instanceof Error ? err.message : String(err);
@@ -906,11 +967,6 @@ export class ProcessSupervisor implements CoreContext {
       `Process recycle for session ${session.sessionId} failed after ${this.recycleSpawnAttempts} attempt(s): ${reason}`,
     );
     console.error(`[refined-antigravity-acp] ${errorObj.message}`);
-    try {
-      this.readableController?.error(errorObj);
-    } catch {
-      // Controller may already be closed
-    }
     throw errorObj;
   }
 

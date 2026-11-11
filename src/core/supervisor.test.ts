@@ -25,28 +25,71 @@ function createMockChild(): {
   stdout: PassThrough;
   stderr: PassThrough;
   stdin: PassThrough;
+  emitClose: () => void;
 } {
   const stdout = new PassThrough();
   const stderr = new PassThrough();
   const stdin = new PassThrough();
 
+  const listeners = new Map<string, Array<(...args: unknown[]) => void>>();
   let isKilled = false;
+  const exitCode: number | null = null;
+  let signalCode: NodeJS.Signals | null = null;
+
   const child = {
     stdout,
     stderr,
     stdin,
+    pid: 12345,
+    get exitCode() {
+      return exitCode;
+    },
+    get signalCode() {
+      return signalCode;
+    },
     get killed() {
       return isKilled;
     },
-    on: () => child,
-    once: () => child,
-    kill: () => {
+    on: (evt: string, fn: (...args: unknown[]) => void) => {
+      const list = listeners.get(evt) ?? [];
+      list.push(fn);
+      listeners.set(evt, list);
+      return child;
+    },
+    once: (evt: string, fn: (...args: unknown[]) => void) => {
+      const wrapped = (...args: unknown[]) => {
+        const list = listeners.get(evt);
+        if (list) {
+          listeners.set(
+            evt,
+            list.filter((l) => l !== wrapped),
+          );
+        }
+        fn(...args);
+      };
+      return child.on(evt, wrapped);
+    },
+    removeAllListeners: (evt?: string) => {
+      if (evt) listeners.delete(evt);
+      else listeners.clear();
+      return child;
+    },
+    kill: (sig?: NodeJS.Signals | number) => {
       isKilled = true;
+      stdin.destroy();
+      signalCode = (typeof sig === "string" ? sig : "SIGKILL") as NodeJS.Signals;
       return true;
     },
   } as unknown as ChildProcess;
 
-  return { child, stdout, stderr, stdin };
+  const emitClose = () => {
+    const list = listeners.get("close") ?? [];
+    for (const fn of list) {
+      fn();
+    }
+  };
+
+  return { child, stdout, stderr, stdin, emitClose };
 }
 
 describe("ProcessSupervisor", () => {
@@ -846,5 +889,113 @@ describe("ProcessSupervisor", () => {
       rmSync(testDir, { recursive: true, force: true });
       supervisor.close();
     }
+  });
+
+  it("solution: fails recycle gracefully on outbound prompt without crashing proxy or destroying stream", async () => {
+    const { child: initialChild, emitClose } = createMockChild();
+    const forwarded: AcpStreamMessage[] = [];
+    const cache = createSessionCache();
+    const session = getOrCreateSession(cache, "sess-fail-recycle");
+    session.needsRecycle = true;
+
+    const supervisor = new ProcessSupervisor({
+      cmd: "mock-agy",
+      args: [],
+      initialChild,
+      pipeline: new AcpPipeline([]),
+      sessionCache: cache,
+      spawnProcess: () => {
+        throw new Error("simulated spawn failure");
+      },
+      recycleSpawnAttempts: 1,
+      recycleRetryDelayMs: 10,
+    });
+
+    const streams = supervisor.createStreams();
+    const reader = streams.readable.getReader();
+    void (async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) forwarded.push(value);
+      }
+    })();
+
+    // Outbound prompt arrives while session needs recycle
+    await supervisor.handleOutbound({
+      jsonrpc: "2.0",
+      id: 999,
+      method: ACP_METHODS.SESSION_PROMPT,
+      params: {
+        sessionId: "sess-fail-recycle",
+        prompt: [{ type: "text", text: "Hello" }],
+      },
+    } as unknown as AcpStreamMessage);
+
+    // Supervisor must NOT be closed, and must forward a JSON-RPC error response for prompt 999
+    expect(supervisor.isClosed).toBe(false);
+    expect(forwarded).toEqual([
+      {
+        jsonrpc: "2.0",
+        id: 999,
+        error: expect.objectContaining({
+          code: -32603,
+          message: expect.stringContaining("sess-fail-recycle"),
+        }),
+      },
+    ]);
+
+    // Late close event on initial killed child must NOT close the supervisor stream
+    emitClose();
+    expect(supervisor.isClosed).toBe(false);
+
+    // Subsequent outbound message for another session or global method when child is dead must reject cleanly
+    await supervisor.handleOutbound({
+      jsonrpc: "2.0",
+      id: 1000,
+      method: ACP_METHODS.SESSION_PROMPT,
+      params: {
+        sessionId: "sess-other",
+        prompt: [{ type: "text", text: "Other" }],
+      },
+    } as unknown as AcpStreamMessage);
+
+    expect(supervisor.isClosed).toBe(false);
+    expect(forwarded).toHaveLength(2);
+    expect(forwarded[1]).toEqual({
+      jsonrpc: "2.0",
+      id: 1000,
+      error: expect.objectContaining({
+        code: -32603,
+        message: expect.stringContaining("Agent process is not running"),
+      }),
+    });
+
+    await reader.cancel();
+    supervisor.close();
+  });
+  it("solution: triggerRecycle rejects when process recycle fails", async () => {
+    const { child: initialChild } = createMockChild();
+    const cache = createSessionCache();
+    const session = getOrCreateSession(cache, "sess-fail-recycle");
+
+    const supervisor = new ProcessSupervisor({
+      cmd: "mock-agy",
+      args: [],
+      initialChild,
+      pipeline: new AcpPipeline([]),
+      sessionCache: cache,
+      spawnProcess: () => {
+        throw new Error("simulated spawn failure");
+      },
+      recycleSpawnAttempts: 1,
+      recycleRetryDelayMs: 10,
+    });
+
+    await expect(supervisor.triggerRecycle(session)).rejects.toThrow(
+      "Process recycle for session sess-fail-recycle failed",
+    );
+    expect(supervisor.isClosed).toBe(false);
+    supervisor.close();
   });
 });

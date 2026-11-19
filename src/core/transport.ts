@@ -31,6 +31,7 @@ export function defaultSpawnProcess(
   return spawn(cmd, args, {
     stdio: ["pipe", "pipe", "pipe"],
     env,
+    detached: process.platform !== "win32",
   });
 }
 

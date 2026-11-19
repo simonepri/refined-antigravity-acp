@@ -27,18 +27,22 @@ import {
   setFixData,
 } from "../../core/session-cache.js";
 
-export type ReasoningEffortLevel = "high" | "medium" | "low";
+export type ReasoningEffortLevel = "xhigh" | "high" | "medium" | "low";
 export const EFFORT_OPTION_ID = "thought_level";
 
-const EFFORT_SUFFIX_RE = /-(high|medium|low)$/i;
+const EFFORT_SUFFIX_RE = /-(xhigh|x-high|high|medium|low)$/i;
 const EFFORT_NAME_RE =
-  /\s*(?:\((high|medium|low)\)|\[(high|medium|low)\]|-\s*(high|medium|low))\s*$/i;
+  /\s*(?:\((xhigh|x-high|high|medium|low)\)|\[(xhigh|x-high|high|medium|low)\]|-\s*(xhigh|x-high|high|medium|low))\s*$/i;
 const EFFORT_CONFIG_IDS = new Set([
   EFFORT_OPTION_ID,
   "effort",
   "reasoning_effort",
   "thinking_effort",
 ]);
+
+export function isNonThinkingModel(modelId: string): boolean {
+  return modelId.includes("orchestrator");
+}
 
 export interface ParsedModelEffort {
   baseModelId: string;
@@ -49,6 +53,9 @@ export interface ParsedModelEffort {
 
 export function normalizeEffort(effort?: string): ReasoningEffortLevel {
   const lower = effort?.toLowerCase();
+  if (lower === "xhigh" || lower === "x-high" || lower === "extrahigh" || lower === "extra-high") {
+    return "xhigh";
+  }
   return lower === "low" || lower === "medium" ? lower : "high";
 }
 
@@ -76,10 +83,7 @@ function parseEffort(
   );
 }
 
-export function parseModelAndEffort(rawId: unknown, rawName?: unknown): ParsedModelEffort {
-  const id = typeof rawId === "string" ? rawId.trim() : "";
-  const name = typeof rawName === "string" ? rawName.trim() : undefined;
-
+function parseSpecialModel(id: string, name?: string): ParsedModelEffort | null {
   if (id === "gemini-pro-agent") {
     return {
       baseModelId: "gemini-3.1-pro",
@@ -88,6 +92,25 @@ export function parseModelAndEffort(rawId: unknown, rawName?: unknown): ParsedMo
       rawId: id,
     };
   }
+
+  if (isNonThinkingModel(id)) {
+    return {
+      baseModelId: id,
+      baseModelName: cleanEffortFromName(name) || formatModelIdToName(id) || id,
+      effort: "high",
+      rawId: id,
+    };
+  }
+
+  return null;
+}
+
+export function parseModelAndEffort(rawId: unknown, rawName?: unknown): ParsedModelEffort {
+  const id = typeof rawId === "string" ? rawId.trim() : "";
+  const name = typeof rawName === "string" ? rawName.trim() : undefined;
+
+  const special = parseSpecialModel(id, name);
+  if (special) return special;
 
   const idMatch = id.match(EFFORT_SUFFIX_RE);
   const nameMatch = name?.match(EFFORT_NAME_RE);
@@ -151,6 +174,10 @@ export function composeModelId(
   const known = resolveKnownModel(cleanBase, e);
   if (known) return known;
 
+  if (isNonThinkingModel(cleanBase)) {
+    return cleanBase;
+  }
+
   const isThinking =
     cleanBase.startsWith("gemini-") || Boolean(getKnownThinkingModels(session)?.has(cleanBase));
   return isThinking ? `${cleanBase}-${e}` : baseModelId;
@@ -168,7 +195,7 @@ function recordSessionVariant(
     KNOWN_THINKING_MODELS_KEY,
     () => new Set<string>(),
   );
-  if (parsed.baseModelId !== rawId) {
+  if (parsed.baseModelId !== rawId && !isNonThinkingModel(parsed.baseModelId)) {
     variants.set(`${parsed.baseModelId}:${parsed.effort}`, rawId);
     knownThinking.add(parsed.baseModelId);
   }
@@ -275,6 +302,7 @@ function injectEffort(
     type: "select",
     currentValue: effort,
     options: [
+      { value: "xhigh", name: "Extra High" },
       { value: "high", name: "High" },
       { value: "medium", name: "Medium" },
       { value: "low", name: "Low" },
@@ -344,9 +372,10 @@ function handleModelConfig(
   const p = parseModelAndEffort(val);
   const knownThinking = getKnownThinkingModels(session);
   const isDecomposable =
-    p.baseModelId !== val ||
-    Boolean(knownThinking?.has(p.baseModelId)) ||
-    val.startsWith("gemini-");
+    !isNonThinkingModel(val) &&
+    (p.baseModelId !== val ||
+      Boolean(knownThinking?.has(p.baseModelId)) ||
+      val.startsWith("gemini-"));
   if (!isDecomposable) {
     setSelectedBaseModel(session, val);
     session.lastConfigOptions.set("model", {

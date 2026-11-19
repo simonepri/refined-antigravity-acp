@@ -105,6 +105,12 @@ export function canonicalizeValue(val: unknown): unknown {
   return sortedObj;
 }
 
+function isSubagentInput(raw: unknown): boolean {
+  if (!raw || typeof raw !== "object") return false;
+  const r = raw as Record<string, unknown>;
+  return "Subagents" in r || "subagents" in r || "Role" in r || "role" in r;
+}
+
 export function inferToolNameFromUpdate(
   title?: string | null,
   kind?: string | null,
@@ -118,9 +124,10 @@ export function inferToolNameFromUpdate(
     return kind;
   }
   if (rawInput && typeof rawInput === "object") {
-    if ("CommandLine" in (rawInput as Record<string, unknown>)) return "run_command";
-    if ("AbsolutePath" in (rawInput as Record<string, unknown>)) return "view_file";
-    if ("Subagents" in (rawInput as Record<string, unknown>)) return "invoke_subagent";
+    const rec = rawInput as Record<string, unknown>;
+    if ("CommandLine" in rec) return "run_command";
+    if ("AbsolutePath" in rec) return "view_file";
+    if (isSubagentInput(rawInput)) return "invoke_subagent";
   }
   return "tool";
 }

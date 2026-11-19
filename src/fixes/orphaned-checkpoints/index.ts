@@ -70,9 +70,15 @@ export function extractGenMetadataStepIndices(data: Uint8Array): {
   let earliestIdx: number | null = null;
 
   const f2 = getField(data, 2);
-  if (f2 && f2.length >= 2) {
-    const [v1] = decodeVarint(f2, 0);
-    stepIdx = v1;
+  if (f2 && f2.length >= 1) {
+    let offset = 0;
+    while (offset < f2.length) {
+      const [v, next] = decodeVarint(f2, offset);
+      if (stepIdx === null || v > stepIdx) {
+        stepIdx = v;
+      }
+      offset = next;
+    }
   }
 
   const f1 = getField(data, 1);
@@ -206,6 +212,12 @@ export const orphanedCheckpointsFix: AcpFix = {
   name: "orphaned-checkpoints",
   description:
     "Repairs orphaned in-progress SQLite checkpoints to prevent fatal doneCh panics on resumption",
+
+  async onRecycle(session): Promise<void> {
+    if (session?.sessionId) {
+      repairOrphanedCheckpoints(session.sessionId);
+    }
+  },
 
   onOutbound(msg: AcpStreamMessage, _context: OutboundContext): AcpStreamMessage {
     if (

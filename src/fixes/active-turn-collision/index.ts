@@ -22,6 +22,7 @@ import {
   extractSessionId,
   getSession,
   getOrCreateSession,
+  getSessionIdForRequest,
   trackPendingRequestSession,
 } from "../../core/session-cache.js";
 
@@ -45,7 +46,8 @@ export interface UserSteeringOptions {
 interface PendingRetryItem {
   msg: AcpStreamMessage;
   attempts: number;
-  recycled?: boolean;
+  timer?: NodeJS.Timeout | undefined;
+  recycled?: boolean | undefined;
 }
 
 function parsePromptError(msg: AcpStreamMessage): { needsRecovery: boolean } | null {
@@ -69,33 +71,49 @@ async function handleSessionRecovery(
   await context.triggerRecycle(session);
 }
 
+async function dispatchQueuedPrompt(
+  msgId: string | number,
+  pending: PendingRetryItem,
+  context: InboundContext,
+): Promise<void> {
+  if (pending.timer) {
+    clearTimeout(pending.timer);
+    pending.timer = undefined;
+  }
+  try {
+    const sessionId = extractSessionId(pending.msg);
+    const session = getSession(context.sessionCache, sessionId);
+    if (session?.needsRecycle) {
+      await context.triggerRecycle(session);
+    }
+    if (
+      sessionId &&
+      "id" in pending.msg &&
+      pending.msg.id !== undefined &&
+      pending.msg.id !== null
+    ) {
+      trackPendingRequestSession(context.sessionCache, pending.msg.id, sessionId);
+    }
+    await context.writeToChild(pending.msg);
+  } catch (err) {
+    console.error(`[refined-antigravity-acp] Failed to resend prompt ${msgId}:`, err);
+  }
+}
+
 function schedulePromptRetry(
   msgId: string | number,
   pending: PendingRetryItem,
   delayMs: number,
   context: InboundContext,
 ): void {
-  const retryTimer = setTimeout(async () => {
-    try {
-      const sessionId = extractSessionId(pending.msg);
-      const session = getSession(context.sessionCache, sessionId);
-      if (session?.needsRecycle) {
-        await context.triggerRecycle(session);
-      }
-      if (
-        sessionId &&
-        "id" in pending.msg &&
-        pending.msg.id !== undefined &&
-        pending.msg.id !== null
-      ) {
-        trackPendingRequestSession(context.sessionCache, pending.msg.id, sessionId);
-      }
-      await context.writeToChild(pending.msg);
-    } catch (err) {
-      console.error(`[refined-antigravity-acp] Failed to resend prompt ${msgId}:`, err);
-    }
+  if (pending.timer) {
+    clearTimeout(pending.timer);
+  }
+  pending.timer = setTimeout(() => {
+    pending.timer = undefined;
+    void dispatchQueuedPrompt(msgId, pending, context);
   }, delayMs);
-  retryTimer.unref?.();
+  pending.timer.unref?.();
 }
 
 async function handlePromptRetryOrRecovery(
@@ -108,24 +126,35 @@ async function handlePromptRetryOrRecovery(
 ): Promise<boolean> {
   if (needsRecovery) {
     await handleSessionRecovery(pending.msg, context);
+    if (pending.attempts >= MAX_PROMPT_RETRIES) {
+      return false;
+    }
+    pending.attempts += 1;
+    schedulePromptRetry(msgId, pending, 0, context);
+    return true;
   }
 
-  if (pending.attempts >= maxRetries) {
-    if (!needsRecovery && !pending.recycled) {
-      pending.recycled = true;
-      pending.attempts = 0;
-      console.warn(
-        `[refined-antigravity-acp] Foreground turn collision persisted for prompt ${msgId}; recycling process to recover`,
-      );
-      await handleSessionRecovery(pending.msg, context);
-      schedulePromptRetry(msgId, pending, 0, context);
-      return true;
+  // If foreground turn collision persists, attempt to cancel any hanging upstream turn
+  if (pending.attempts === 2) {
+    const sessionId = extractSessionId(pending.msg);
+    if (sessionId) {
+      void context.writeToChild({
+        jsonrpc: "2.0",
+        id: `cancel_collision_${Date.now()}`,
+        method: ACP_METHODS.SESSION_CANCEL,
+        params: { sessionId },
+      });
     }
+  }
+
+  // Foreground turn collision: never kill or recycle the healthy process while the turn is active!
+  // Return false when maxRetries is exceeded so client receives the error and unfreezes.
+  if (pending.attempts >= maxRetries) {
     return false;
   }
 
   pending.attempts += 1;
-  schedulePromptRetry(msgId, pending, needsRecovery ? 0 : delayMs, context);
+  schedulePromptRetry(msgId, pending, delayMs, context);
   return true;
 }
 
@@ -144,6 +173,65 @@ function trackOutboundPrompt(
 export const USER_STEERING_INSTRUCTIONS: readonly string[] = [
   "When receiving a mid-turn update, question, or redirection, acknowledge and address it directly in your response before proceeding or stopping.",
 ];
+
+function cleanupPendingRetry(
+  pendingPromptRetries: Map<string | number, PendingRetryItem>,
+  msgId: string | number,
+): void {
+  const pending = pendingPromptRetries.get(msgId);
+  if (pending?.timer) {
+    clearTimeout(pending.timer);
+    pending.timer = undefined;
+  }
+  pendingPromptRetries.delete(msgId);
+}
+
+function dispatchQueuedOnTurnCompletion(
+  msg: AcpStreamMessage,
+  pendingPromptRetries: Map<string | number, PendingRetryItem>,
+  context: InboundContext,
+): void {
+  if (!isJsonRpcResponse(msg) || !("result" in msg) || !msg.result) return;
+  const completedSessionId =
+    getSessionIdForRequest(context.sessionCache, msg.id) ?? extractSessionId(msg);
+  if (!completedSessionId) return;
+
+  for (const [id, pending] of pendingPromptRetries.entries()) {
+    if (id !== msg.id && extractSessionId(pending.msg) === completedSessionId) {
+      void dispatchQueuedPrompt(id, pending, context);
+      break;
+    }
+  }
+}
+
+async function handleInboundCollision(
+  msg: AcpStreamMessage & { id: string | number },
+  pending: PendingRetryItem,
+  delayMs: number,
+  maxRetries: number,
+  context: InboundContext,
+  pendingPromptRetries: Map<string | number, PendingRetryItem>,
+): Promise<AcpStreamMessage[]> {
+  const parsed = parsePromptError(msg);
+  if (!parsed) {
+    cleanupPendingRetry(pendingPromptRetries, msg.id);
+    return [msg];
+  }
+
+  const retried = await handlePromptRetryOrRecovery(
+    msg.id,
+    pending,
+    parsed.needsRecovery,
+    delayMs,
+    maxRetries,
+    context,
+  );
+  if (!retried) {
+    cleanupPendingRetry(pendingPromptRetries, msg.id);
+    return [msg];
+  }
+  return [];
+}
 
 export function createActiveTurnCollisionFix(options?: UserSteeringOptions): AcpFix {
   const pendingPromptRetries = new Map<string | number, PendingRetryItem>();
@@ -168,32 +256,26 @@ export function createActiveTurnCollisionFix(options?: UserSteeringOptions): Acp
       msg: AcpStreamMessage,
       context: InboundContext,
     ): Promise<AcpStreamMessage[]> => {
+      dispatchQueuedOnTurnCompletion(msg, pendingPromptRetries, context);
       if (!isJsonRpcResponse(msg)) return [msg];
       const pending = pendingPromptRetries.get(msg.id);
       if (!pending) return [msg];
-
-      const parsed = parsePromptError(msg);
-      if (!parsed) {
-        pendingPromptRetries.delete(msg.id);
-        return [msg];
-      }
-
-      const retried = await handlePromptRetryOrRecovery(
-        msg.id,
+      return handleInboundCollision(
+        msg as AcpStreamMessage & { id: string | number },
         pending,
-        parsed.needsRecovery,
         delayMs,
         maxRetries,
         context,
+        pendingPromptRetries,
       );
-      if (!retried) {
-        pendingPromptRetries.delete(msg.id);
-        return [msg];
-      }
-      return [];
     },
 
     dispose: (): void => {
+      for (const pending of pendingPromptRetries.values()) {
+        if (pending.timer) {
+          clearTimeout(pending.timer);
+        }
+      }
       pendingPromptRetries.clear();
     },
   };

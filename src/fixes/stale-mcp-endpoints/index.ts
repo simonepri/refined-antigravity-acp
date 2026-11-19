@@ -389,14 +389,7 @@ export class McpProxyPool {
   async stopAll(): Promise<void> {
     const pending = Array.from(this.proxies.values());
     this.proxies.clear();
-    await Promise.all(
-      pending.map((p) =>
-        p.then(
-          (proxy) => proxy.stop(),
-          () => undefined,
-        ),
-      ),
-    );
+    await Promise.all(pending.map((p) => p.then((proxy) => proxy.stop()).catch(() => undefined)));
   }
 }
 

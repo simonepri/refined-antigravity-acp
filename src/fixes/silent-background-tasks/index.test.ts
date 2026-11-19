@@ -8,6 +8,7 @@ import type {
 import {
   createBackgroundTasksFix,
   detectCompletedSubagentsInText,
+  extractSubagentTitleFromPrompt,
   formatScheduleTask,
   formatSubagentContent,
   inferToolName,
@@ -1186,5 +1187,266 @@ describe("prompt settlement during background tasks", () => {
 
     expect(lateResponse).toEqual([]);
     fix.dispose?.();
+  });
+
+  it("extracts concise actionable titles from subagent prompts", () => {
+    expect(
+      extractSubagentTitleFromPrompt(
+        "You are working in an isolated shared workspace at /Users/foo/repo. Your task is to investigate why kras-6bp1.cif was missing from the science_server test suite.",
+      ),
+    ).toBe("Investigate why kras-6bp1.cif was missing from the...");
+
+    expect(
+      extractSubagentTitleFromPrompt(
+        "Please audit Bazel diff for reverse dependencies in //src/deps",
+      ),
+    ).toBe("Audit Bazel diff for reverse dependencies in //src/deps");
+
+    expect(
+      extractSubagentTitleFromPrompt(
+        "You are an expert software engineer.\nCheck the build configuration and find unused rules.",
+      ),
+    ).toBe("Check the build configuration and find unused rules");
+  });
+
+  it("parses single flat invoke_subagent calls and extracts detailed task titles", () => {
+    const flatSubagent = {
+      Role: "Bazel Performance Auditor",
+      Prompt: "Analyze build traces for remote cache bottlenecks",
+      TypeName: "research",
+    };
+    const parsed = parseSubagentsFromArgs(flatSubagent);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]?.role).toBe("Bazel Performance Auditor");
+    expect(formatSubagentContent(parsed[0]!)).toBe("Subagent: Bazel Performance Auditor");
+
+    const promptOnlySubagent = {
+      Prompt:
+        "You are working in an isolated shared workspace at /Users/repo. Your task is to investigate why kras-6bp1.cif was missing from science_server.",
+    };
+    const parsedPromptOnly = parseSubagentsFromArgs(promptOnlySubagent);
+    expect(parsedPromptOnly).toHaveLength(1);
+    expect(formatSubagentContent(parsedPromptOnly[0]!)).toBe(
+      "Subagent: Investigate why kras-6bp1.cif was missing from...",
+    );
+  });
+
+  it("preserves detailed subagent titles across telemetry reports and avoids duplicate generic tasks", async () => {
+    const fix = createBackgroundTasksFix();
+    const sessionId = "sess_sub_detailed";
+
+    // 1. Tool call initiates subagent with detailed role
+    const toolMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "call_sub_auditor",
+          name: "invoke_subagent",
+          rawInput: {
+            Role: "Bazel Performance Auditor",
+            Prompt: "Audit remote cache bottlenecks",
+            TypeName: "research",
+          },
+        },
+      },
+    } as unknown as AcpStreamMessage;
+
+    const res1 = (await fix.onInbound?.(toolMsg, dummyInboundContext)) as AcpStreamMessage[];
+    expect(res1).toHaveLength(2);
+    const plan1 = res1[1] as { params: { update: { entries: PlanEntry[] } } };
+    expect(plan1.params.update.entries).toEqual([
+      { content: "Subagent: Bazel Performance Auditor", priority: "high", status: "in_progress" },
+    ]);
+
+    // 2. Status report arrives via manage_subagents without role (only conversationId and state)
+    const reportMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call_manage_sub",
+          name: "manage_subagents",
+          rawOutput: JSON.stringify([{ conversationId: "sub-conv-1234", state: "running" }]),
+        },
+      },
+    } as unknown as AcpStreamMessage;
+
+    const res2 = (await fix.onInbound?.(reportMsg, dummyInboundContext)) as AcpStreamMessage[];
+    // Should NOT duplicate or overwrite with generic "Subagent: Background Task"
+    const plan2 = res2.find(
+      (m) =>
+        "params" in m &&
+        (m.params as { update?: { sessionUpdate?: string } })?.update?.sessionUpdate === "plan",
+    ) as { params: { update: { entries: PlanEntry[] } } } | undefined;
+    if (plan2) {
+      expect(plan2.params.update.entries).toEqual([
+        { content: "Subagent: Bazel Performance Auditor", priority: "high", status: "in_progress" },
+      ]);
+    }
+
+    // 3. Status report arrives marking subagent complete
+    const finishMsg: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "call_manage_sub_2",
+          name: "manage_subagents",
+          rawOutput: JSON.stringify([{ conversationId: "sub-conv-1234", state: "idle" }]),
+        },
+      },
+    } as unknown as AcpStreamMessage;
+
+    const res3 = (await fix.onInbound?.(finishMsg, dummyInboundContext)) as AcpStreamMessage[];
+    const plan3 = res3.find(
+      (m) =>
+        "params" in m &&
+        (m.params as { update?: { sessionUpdate?: string } })?.update?.sessionUpdate === "plan",
+    ) as { params: { update: { entries: PlanEntry[] } } } | undefined;
+    expect(plan3).toBeDefined();
+    expect(plan3?.params.update.entries).toEqual([
+      { content: "Subagent: Bazel Performance Auditor", priority: "high", status: "completed" },
+    ]);
+  });
+
+  it("detects background task intent from assistant text and avoids duplicates when task ID is already tracked", async () => {
+    const fix = createBackgroundTasksFix();
+    const sessionId = "sess_bg_intent";
+
+    // 1. run_command tool call starts with toolSummary
+    await fix.onInbound?.(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "call_bench_4532",
+            rawInput: {
+              CommandLine: "python3 bench.py",
+              toolSummary: "Test tuned flags and fresh output_base size",
+            },
+          },
+        },
+      } as unknown as AcpStreamMessage,
+      dummyInboundContext,
+    );
+
+    // 2. tool_call_update returns background task id
+    const bgUpdateRes = (await fix.onInbound?.(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_bench_4532",
+            rawOutput:
+              "Tool is running as a background task with task id: sess_bg_intent/task-4532\nTask logs are available at: ...",
+          },
+        },
+      } as unknown as AcpStreamMessage,
+      dummyInboundContext,
+    )) as AcpStreamMessage[];
+
+    const plan1 = bgUpdateRes.find(
+      (m) =>
+        "params" in m &&
+        (m.params as { update?: { sessionUpdate?: string } })?.update?.sessionUpdate === "plan",
+    ) as { params: { update: { entries: PlanEntry[] } } } | undefined;
+    expect(plan1).toBeDefined();
+    expect(plan1?.params.update.entries[0]?.content).toBe(
+      "Background task: Test tuned flags and fresh output_base size",
+    );
+
+    // 3. Assistant text mentions running task-4532 in background - should NOT duplicate as generic task-4532!
+    const textRes = (await fix.onInbound?.(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: {
+              type: "text",
+              text: "Running `task-4532` in the background to measure `--watchfs` cache size.",
+            },
+          },
+        },
+      } as unknown as AcpStreamMessage,
+      dummyInboundContext,
+    )) as AcpStreamMessage[];
+
+    // No duplicate plan entry should be emitted
+    expect(textRes).toHaveLength(1);
+
+    // 4. Another task launched purely via text with intent description
+    const text2Res = (await fix.onInbound?.(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: {
+              type: "text",
+              text: "I have launched task-2847 to check why kras-6bp1.cif was missing from the science_server test suite. I will wait for it to finish.",
+            },
+          },
+        },
+      } as unknown as AcpStreamMessage,
+      dummyInboundContext,
+    )) as AcpStreamMessage[];
+
+    const plan2 = text2Res.find(
+      (m) =>
+        "params" in m &&
+        (m.params as { update?: { sessionUpdate?: string } })?.update?.sessionUpdate === "plan",
+    ) as { params: { update: { entries: PlanEntry[] } } } | undefined;
+    expect(plan2).toBeDefined();
+    expect(
+      plan2?.params.update.entries.some((e) =>
+        e.content.includes("Check why kras-6bp1.cif was missing"),
+      ),
+    ).toBe(true);
+
+    // 5. Completion of task-4532 via manage_task output marks it complete
+    const finishRes = (await fix.onInbound?.(
+      {
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "call_mt_1",
+            rawOutput: 'Task id "sess_bg_intent/task-4532" finished with result: OK',
+          },
+        },
+      } as unknown as AcpStreamMessage,
+      dummyInboundContext,
+    )) as AcpStreamMessage[];
+
+    const plan3 = finishRes.find(
+      (m) =>
+        "params" in m &&
+        (m.params as { update?: { sessionUpdate?: string } })?.update?.sessionUpdate === "plan",
+    ) as { params: { update: { entries: PlanEntry[] } } } | undefined;
+    expect(plan3).toBeDefined();
+    const task4532Entry = plan3?.params.update.entries.find((e) =>
+      e.content.includes("Test tuned flags"),
+    );
+    expect(task4532Entry?.status).toBe("completed");
   });
 });

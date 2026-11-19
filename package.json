@@ -74,12 +74,12 @@
     "@types/node": "^26.0.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
-    "fallow": "^3.28.0",
-    "oxfmt": "^0.77.0",
-    "oxlint": "^1.85.0",
+    "fallow": "^3.43.2",
+    "oxfmt": "^0.79.0",
+    "oxlint": "^1.94.0",
     "publint": "^0.3.24",
     "typescript": "^7.0.2",
-    "vitest": "^5.0.1"
+    "vitest": "^5.1.1"
   },
   "engines": {
     "node": ">=22.0.0"

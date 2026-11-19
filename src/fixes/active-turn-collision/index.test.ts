@@ -81,7 +81,7 @@ describe("userSteeringFix", () => {
     expect(testContext.sessionCache.pendingRequestSessions.get(102)).toBe("s1");
   });
 
-  it("recycles wedged process and retries when foreground turn collision persists past maxRetries", async () => {
+  it("does not recycle healthy process on foreground turn collision and stops retrying when maxRetries is reached", async () => {
     const fix = createUserSteeringFix({ delayMs: 10, maxRetries: 2 });
     const promptMsg: AcpStreamMessage = {
       jsonrpc: "2.0",
@@ -93,7 +93,6 @@ describe("userSteeringFix", () => {
     fix.onOutbound?.(promptMsg, dummyContext);
 
     let recycled = false;
-    let writtenToChild: AcpStreamMessage | null = null;
     const testContext: InboundContext = {
       sessionCache: {
         sessions: new Map(),
@@ -101,9 +100,7 @@ describe("userSteeringFix", () => {
         pendingRequestSessions: new Map(),
       },
       forwardInbound: () => {},
-      writeToChild: async (msg) => {
-        writtenToChild = msg;
-      },
+      writeToChild: async () => {},
       sendInternalRequest: async () => ({}) as AcpStreamMessage,
       triggerRecycle: async () => {
         recycled = true;
@@ -117,24 +114,77 @@ describe("userSteeringFix", () => {
       error: { code: -32000, message: "A foreground turn is already active" },
     } as unknown as AcpStreamMessage;
 
-    // Attempt 1: retries
+    // Attempt 1: retries without recycling
     const res1 = await fix.onInbound?.(collisionError, testContext);
     expect(res1).toEqual([]);
     expect(recycled).toBe(false);
 
-    // Attempt 2: retries
+    // Attempt 2: retries without recycling
     const res2 = await fix.onInbound?.(collisionError, testContext);
     expect(res2).toEqual([]);
     expect(recycled).toBe(false);
 
-    // Attempt 3: maxRetries (2) exceeded, triggers recovery and recycle!
+    // Attempt 3: maxRetries (2) exceeded, returns error to client without killing the process
     const res3 = await fix.onInbound?.(collisionError, testContext);
-    expect(res3).toEqual([]);
-    expect(recycled).toBe(true);
+    expect(res3).toEqual([collisionError]);
+    expect(recycled).toBe(false);
+  });
 
-    // Wait for the immediate retry timer
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(writtenToChild).toEqual(promptMsg);
+  it("dispatches queued colliding prompt immediately when the active turn completes", async () => {
+    const fix = createUserSteeringFix({ delayMs: 1000 });
+    const prompt1: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 101,
+      method: "session/prompt",
+      params: { sessionId: "s-turn", prompt: [{ type: "text", text: "prompt 1" }] },
+    } as unknown as AcpStreamMessage;
+    const prompt2: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 102,
+      method: "session/prompt",
+      params: { sessionId: "s-turn", prompt: [{ type: "text", text: "prompt 2" }] },
+    } as unknown as AcpStreamMessage;
+
+    fix.onOutbound?.(prompt1, dummyContext);
+    fix.onOutbound?.(prompt2, dummyContext);
+
+    let writtenToChild: AcpStreamMessage | null = null;
+    const testContext: InboundContext = {
+      sessionCache: {
+        sessions: new Map(),
+        pendingSessionMetadata: new Map(),
+        pendingRequestSessions: new Map([[101, "s-turn"]]),
+      },
+      forwardInbound: () => {},
+      writeToChild: async (msg) => {
+        writtenToChild = msg;
+      },
+      sendInternalRequest: async () => ({}) as AcpStreamMessage,
+      triggerRecycle: async () => {},
+      declareHang: () => {},
+    };
+
+    // Prompt 2 collides with Turn 1
+    const collisionError: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 102,
+      error: { code: -32000, message: "A foreground turn is already active" },
+    } as unknown as AcpStreamMessage;
+    const collisionRes = await fix.onInbound?.(collisionError, testContext);
+    expect(collisionRes).toEqual([]);
+    expect(writtenToChild).toBeNull();
+
+    // Turn 1 completes
+    const turn1Done: AcpStreamMessage = {
+      jsonrpc: "2.0",
+      id: 101,
+      result: { stopReason: "end_turn" },
+    } as unknown as AcpStreamMessage;
+    const turn1Res = await fix.onInbound?.(turn1Done, testContext);
+    expect(turn1Res).toEqual([turn1Done]);
+
+    // Prompt 2 must be dispatched immediately without waiting for retry timer!
+    expect(writtenToChild).toEqual(prompt2);
   });
 
   it("recycles process and retries immediately when upstream rejects with Session not found error details", async () => {

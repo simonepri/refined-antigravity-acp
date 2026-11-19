@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   cleanEffortFromName,
+  composeModelId,
   filterConfigOptions,
   flattenedModelEffortsFix,
   formatModelIdToName,
@@ -17,11 +18,15 @@ describe("flattened-model-efforts unit tests", () => {
     expect(normalizeEffort("LOW")).toBe("low");
     expect(normalizeEffort("medium")).toBe("medium");
     expect(normalizeEffort("high")).toBe("high");
+    expect(normalizeEffort("xhigh")).toBe("xhigh");
+    expect(normalizeEffort("x-high")).toBe("xhigh");
+    expect(normalizeEffort("extrahigh")).toBe("xhigh");
     expect(normalizeEffort("unknown")).toBe("high");
     expect(normalizeEffort(undefined)).toBe("high");
   });
 
   it("cleans effort suffixes from display names", () => {
+    expect(cleanEffortFromName("Gemini 4 Hydrogen (xhigh)")).toBe("Gemini 4 Hydrogen");
     expect(cleanEffortFromName("Gemini 4 Argon (High)")).toBe("Gemini 4 Argon");
     expect(cleanEffortFromName("Gemini 3.8 Flash [Medium]")).toBe("Gemini 3.8 Flash");
     expect(cleanEffortFromName("Claude 3.7 Sonnet - Low")).toBe("Claude 3.7 Sonnet");
@@ -56,6 +61,32 @@ describe("flattened-model-efforts unit tests", () => {
       effort: "high",
       rawId: "gemini-pro-agent",
     });
+
+    expect(parseModelAndEffort("gemini-4-hydrogen-xhigh", "Gemini 4 Hydrogen (xhigh)")).toEqual({
+      baseModelId: "gemini-4-hydrogen",
+      baseModelName: "Gemini 4 Hydrogen",
+      effort: "xhigh",
+      rawId: "gemini-4-hydrogen-xhigh",
+    });
+
+    expect(parseModelAndEffort("gemini-pro-orchestrator")).toEqual({
+      baseModelId: "gemini-pro-orchestrator",
+      baseModelName: "Gemini Pro Orchestrator",
+      effort: "high",
+      rawId: "gemini-pro-orchestrator",
+    });
+
+    expect(parseModelAndEffort("gemini-pro-orchestrator-neon")).toEqual({
+      baseModelId: "gemini-pro-orchestrator-neon",
+      baseModelName: "Gemini Pro Orchestrator Neon",
+      effort: "high",
+      rawId: "gemini-pro-orchestrator-neon",
+    });
+    expect(composeModelId("gemini-4-hydrogen", "xhigh")).toBe("gemini-4-hydrogen-xhigh");
+    expect(composeModelId("gemini-pro-orchestrator", "high")).toBe("gemini-pro-orchestrator");
+    expect(composeModelId("gemini-pro-orchestrator-neon", "low")).toBe(
+      "gemini-pro-orchestrator-neon",
+    );
   });
 
   it("collapses models.availableModels into unique base models", () => {

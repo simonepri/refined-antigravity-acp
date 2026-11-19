@@ -10,7 +10,7 @@ import {
 } from "../../core/types.js";
 import { AcpPipeline } from "../../core/pipeline.js";
 import { ProcessSupervisor } from "../../core/supervisor.js";
-import { createBackgroundTasksFix } from "./index.js";
+import { createBackgroundTasksFix, type PlanEntry } from "./index.js";
 import { createDefaultFixes } from "../index.js";
 
 function createMockChild(): {
@@ -509,6 +509,134 @@ describe("silent-background-tasks e2e", () => {
 
     expect(receivedPromptResponse).toBeDefined();
     expect(receivedPromptResponse?.result?.stopReason).toBe("end_turn");
+
+    await reader.cancel();
+    supervisor.close();
+  });
+
+  it("solution: synthesizes detailed task titles for flat subagent invocations and background tasks", async () => {
+    const { child } = createMockChild();
+    const forwarded: AcpStreamMessage[] = [];
+
+    const supervisor = new ProcessSupervisor({
+      cmd: "mock-agy",
+      args: [],
+      initialChild: child,
+      pipeline: new AcpPipeline(createDefaultFixes()),
+    });
+
+    const streams = supervisor.createStreams();
+    const reader = streams.readable.getReader();
+    void (async () => {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) forwarded.push(value);
+      }
+    })();
+
+    // 1. Client sends prompt
+    await supervisor.handleOutbound({
+      jsonrpc: "2.0",
+      id: 501,
+      method: ACP_METHODS.SESSION_PROMPT,
+      params: {
+        sessionId: "sess-detailed-titles",
+        prompt: [{ type: "text", text: "Audit the build and benchmark in the background" }],
+      },
+    } as unknown as AcpStreamMessage);
+
+    // 2. Upstream emits flat invoke_subagent tool call (without Subagents wrapper array)
+    await supervisor.handleStdoutLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: ACP_METHODS.SESSION_UPDATE,
+        params: {
+          sessionId: "sess-detailed-titles",
+          update: {
+            sessionUpdate: SESSION_UPDATES.TOOL_CALL,
+            toolCallId: "call-sub-auditor",
+            name: "invoke_subagent",
+            rawInput: {
+              Role: "Bazel Performance Auditor",
+              Prompt: "Analyze build traces for remote cache bottlenecks",
+              TypeName: "research",
+            },
+          },
+        },
+      }),
+    );
+
+    // 3. Upstream emits run_command tool call with toolSummary
+    await supervisor.handleStdoutLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: ACP_METHODS.SESSION_UPDATE,
+        params: {
+          sessionId: "sess-detailed-titles",
+          update: {
+            sessionUpdate: SESSION_UPDATES.TOOL_CALL,
+            toolCallId: "call-bench-task",
+            rawInput: {
+              CommandLine: "python3 bench.py",
+              toolSummary: "Test tuned flags and fresh output_base size",
+            },
+          },
+        },
+      }),
+    );
+
+    // 4. Background task execution notification for run_command
+    await supervisor.handleStdoutLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: ACP_METHODS.SESSION_UPDATE,
+        params: {
+          sessionId: "sess-detailed-titles",
+          update: {
+            sessionUpdate: SESSION_UPDATES.TOOL_CALL_UPDATE,
+            toolCallId: "call-bench-task",
+            rawOutput:
+              "Tool is running as a background task with task id: sess-detailed-titles/task-4532\nTask logs are available at: ...",
+          },
+        },
+      }),
+    );
+
+    // 5. Upstream localharness polls manage_subagents with bare conversationId and state
+    await supervisor.handleStdoutLine(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        method: ACP_METHODS.SESSION_UPDATE,
+        params: {
+          sessionId: "sess-detailed-titles",
+          update: {
+            sessionUpdate: SESSION_UPDATES.TOOL_CALL_UPDATE,
+            toolCallId: "call-manage-sub",
+            name: "manage_subagents",
+            rawOutput: JSON.stringify([{ conversationId: "sub-101", state: "running" }]),
+          },
+        },
+      }),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    // VERIFY: The plan contains the descriptive subagent title and background task title,
+    // and NO generic "Subagent: Background Task" or bare "Background task: task-4532"!
+    const planUpdates = forwarded.filter(
+      (m) =>
+        "params" in m &&
+        (m.params as { update?: { sessionUpdate?: string } })?.update?.sessionUpdate === "plan",
+    ) as Array<{ params: { update: { entries: PlanEntry[] } } }>;
+
+    expect(planUpdates.length).toBeGreaterThan(0);
+    const lastPlan = planUpdates.at(-1)!;
+    const entryContents = lastPlan.params.update.entries.map((e) => e.content);
+
+    expect(entryContents).toContain("Subagent: Bazel Performance Auditor");
+    expect(entryContents).toContain("Background task: Test tuned flags and fresh output_base size");
+    expect(entryContents).not.toContain("Subagent: Background Task");
 
     await reader.cancel();
     supervisor.close();

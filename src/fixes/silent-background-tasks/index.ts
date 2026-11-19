@@ -124,6 +124,30 @@ function parseSubagentItem(item: unknown): SubagentInfo | null {
   };
 }
 
+function hasSubagentProperties(rec: Record<string, unknown>): boolean {
+  return (
+    rec.Role !== undefined ||
+    rec.role !== undefined ||
+    rec.Prompt !== undefined ||
+    rec.prompt !== undefined ||
+    rec.TypeName !== undefined ||
+    rec.typeName !== undefined ||
+    rec.type !== undefined
+  );
+}
+
+function parseSubagentsProperty(subs: unknown): unknown[] {
+  if (typeof subs === "string") {
+    try {
+      const parsed = JSON.parse(subs);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return Array.isArray(subs) ? subs : [];
+}
+
 function extractSubagentsArray(rawArgs: unknown): unknown[] {
   if (!rawArgs) return [];
   let obj: unknown = rawArgs;
@@ -135,16 +159,11 @@ function extractSubagentsArray(rawArgs: unknown): unknown[] {
     }
   }
   if (!obj || typeof obj !== "object") return [];
+  if (Array.isArray(obj)) return obj;
   const record = obj as Record<string, unknown>;
-  let subs = record.Subagents ?? record.subagents;
-  if (typeof subs === "string") {
-    try {
-      subs = JSON.parse(subs);
-    } catch {
-      return [];
-    }
-  }
-  return Array.isArray(subs) ? subs : [];
+  const subs = parseSubagentsProperty(record.Subagents ?? record.subagents);
+  if (subs.length > 0) return subs;
+  return hasSubagentProperties(record) ? [record] : [];
 }
 
 export function parseSubagentsFromArgs(rawArgs: unknown): SubagentInfo[] {
@@ -268,17 +287,55 @@ export function detectCompletedSubagentsInText(
   return completed;
 }
 
-export function formatSubagentContent(info: SubagentInfo): string {
-  if (info.role) {
-    return `Subagent: ${info.role}`;
+function extractDirectiveOrSentence(text: string): string {
+  const directiveMatch = text.match(
+    /(?:Your\s+(?:task|goal|objective)\s+is\s+to|Please|Goal:|Objective:|Task:)\s+([^\r\n]+)/i,
+  );
+  if (directiveMatch?.[1]) {
+    return directiveMatch[1].trim();
   }
-  if (info.typeName) {
+  const firstLine = text.split(/[\r\n]+/)[0]?.trim() ?? "";
+  return firstLine.split(/(?<=[.!?])\s+/)[0]?.trim() ?? firstLine;
+}
+
+export function extractSubagentTitleFromPrompt(prompt: string): string | null {
+  let text = prompt.trim();
+  if (!text) return null;
+
+  text = text.replace(/^(?:You are\s+(?:an?|working in)\b[^\n.!?]*[\n.!?]+\s*)+/i, "").trim();
+  text = extractDirectiveOrSentence(text);
+
+  if (text.length > 0) {
+    text = text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  text = text.replace(/[.:;,\s]+$/, "").trim();
+
+  if (text.length > 55) {
+    const truncated = text.slice(0, 52);
+    const lastSpace = truncated.lastIndexOf(" ");
+    text = (lastSpace > 30 ? truncated.slice(0, lastSpace) : truncated) + "...";
+  }
+
+  return text.length > 0 ? text : null;
+}
+
+export function formatSubagentContent(info: SubagentInfo): string {
+  if (info.role && info.role.trim()) {
+    const role = info.role.trim();
+    if (role.toLowerCase().startsWith("subagent:")) {
+      return role;
+    }
+    return `Subagent: ${role}`;
+  }
+  if (info.typeName && info.typeName !== "self" && info.typeName !== "default") {
     return `Subagent: ${info.typeName}`;
   }
-  if (info.prompt) {
-    const trimmed = info.prompt.trim();
-    const shortPrompt = trimmed.length > 50 ? `${trimmed.slice(0, 47)}...` : trimmed;
-    return `Subagent: ${shortPrompt}`;
+  if (info.prompt && info.prompt.trim()) {
+    const title = extractSubagentTitleFromPrompt(info.prompt);
+    if (title) {
+      return `Subagent: ${title}`;
+    }
   }
   return "Subagent: Background Task";
 }
@@ -288,19 +345,63 @@ export interface BackgroundTaskInfo {
   taskId?: string | undefined;
 }
 
-export function detectLaunchedTasksInText(text: string): BackgroundTaskInfo[] {
+function parseTextIntent(rawIntent: string): string {
+  const firstSentence = rawIntent.split(/(?<=[.!?])\s+/)[0] ?? rawIntent;
+  const stripped = firstSentence
+    .replace(/\s+(?:and|\bI\b|I'll|I will)\b.*/i, "")
+    .replace(/[.:;,\s]+$/, "")
+    .trim();
+  if (!stripped) return "";
+  const capitalized = stripped.charAt(0).toUpperCase() + stripped.slice(1);
+  return truncateText(capitalized, 55);
+}
+
+function parseExplicitBackgroundTasks(
+  text: string,
+  seenTaskIds: Set<string>,
+): BackgroundTaskInfo[] {
   const launched: BackgroundTaskInfo[] = [];
   const p1 =
     /(?:launched|running|started)\s+`([^`]+)`\s+in\s+the\s+background(?:\s*\(task\s+`?([^`)\s]+)`?\))?/gi;
   for (const m of text.matchAll(p1)) {
-    if (m[1]) {
-      let taskId = m[2]?.trim();
-      if (taskId && taskId.includes("/")) {
-        taskId = taskId.split("/").pop();
-      }
-      launched.push({ desc: m[1].trim(), taskId });
+    if (!m[1]) continue;
+    let rawDesc = m[1].trim();
+    let taskId = m[2]?.trim();
+    if (taskId && taskId.includes("/")) taskId = taskId.split("/").pop();
+    const taskIdMatch = rawDesc.match(/^(?:task-[\w-]+)$/i);
+    if (taskIdMatch) {
+      if (!taskId) taskId = taskIdMatch[0];
+      rawDesc = "";
+    }
+    if (taskId) seenTaskIds.add(taskId);
+    launched.push({ desc: rawDesc, taskId });
+  }
+  return launched;
+}
+
+export function detectLaunchedTasksInText(text: string): BackgroundTaskInfo[] {
+  const seenTaskIds = new Set<string>();
+  const launched = parseExplicitBackgroundTasks(text, seenTaskIds);
+
+  const p2 =
+    /(?:launched|running|started)\s+(?:task\s+)?`?(task-[\w-]+)`?(?:\s+in\s+the\s+background)?(?:\s+(?:to|for)\s+([^\r\n]+))?/gi;
+  for (const m of text.matchAll(p2)) {
+    const taskId = m[1]?.trim();
+    if (!taskId || seenTaskIds.has(taskId)) continue;
+    seenTaskIds.add(taskId);
+    const desc = m[2] ? parseTextIntent(m[2].trim()) : "";
+    launched.push({ desc, taskId });
+  }
+
+  const p3 = /(?:Added Background task:\s*`?(task-[\w-]+)`?)/gi;
+  for (const m of text.matchAll(p3)) {
+    const taskId = m[1]?.trim();
+    if (taskId && !seenTaskIds.has(taskId)) {
+      seenTaskIds.add(taskId);
+      launched.push({ desc: "", taskId });
     }
   }
+
   return launched;
 }
 
@@ -375,16 +476,45 @@ function applyReportToExistingSubagent(
   return false;
 }
 
-function applyReportToTracker(report: SubagentStatusReport, tracker: SessionPlanTracker): boolean {
-  const isDone = isSubagentCompletedState(report.state);
-  const matched = tracker.trackedSubagents.find(
+function tryCompleteInProgressTracked(tracker: SessionPlanTracker, convId?: string): boolean {
+  const inProg = tracker.trackedSubagents.find((s) => s.status !== "completed");
+  if (!inProg) return false;
+  if (convId && !inProg.conversationId) {
+    inProg.conversationId = convId;
+  }
+  inProg.status = "completed";
+  const entry = tracker.entries.find((e) => e.content === inProg.content);
+  if (entry) entry.status = "completed";
+  return true;
+}
+
+function findMatchingSubagent(
+  report: SubagentStatusReport,
+  tracker: SessionPlanTracker,
+): TrackedSubagentInfo | undefined {
+  let matched = tracker.trackedSubagents.find(
     (s) =>
       (report.conversationId && s.conversationId === report.conversationId) ||
       (report.role && s.role && s.role.trim().toLowerCase() === report.role.trim().toLowerCase()),
   );
+  if (!matched && report.conversationId) {
+    matched = tracker.trackedSubagents.find((s) => !s.conversationId);
+    if (matched) {
+      matched.conversationId = report.conversationId;
+    }
+  }
+  return matched;
+}
 
+function applyReportToTracker(report: SubagentStatusReport, tracker: SessionPlanTracker): boolean {
+  const isDone = isSubagentCompletedState(report.state);
+  const matched = findMatchingSubagent(report, tracker);
   if (matched) {
     return applyReportToExistingSubagent(report, matched, tracker);
+  }
+
+  if (!report.role && !report.type && tracker.trackedSubagents.length > 0) {
+    return isDone ? tryCompleteInProgressTracked(tracker, report.conversationId) : false;
   }
 
   const subInfo: SubagentInfo = {
@@ -445,8 +575,23 @@ function updateSubagentsFromText(tracker: SessionPlanTracker, text: string): boo
 function registerLaunchedTasksFromText(tracker: SessionPlanTracker, text: string): boolean {
   let changed = false;
   for (const t of detectLaunchedTasksInText(text)) {
-    const content = `Background task: ${t.desc}`;
-    if (!tracker.entries.some((e) => e.content === content)) {
+    if (t.taskId && tracker.taskIds.has(t.taskId)) {
+      continue;
+    }
+
+    let content: string | undefined;
+    if (t.desc) {
+      content = `Background task: ${t.desc}`;
+    } else if (t.taskId) {
+      content = `Background task: ${t.taskId}`;
+    }
+
+    if (
+      content &&
+      !tracker.entries.some(
+        (e) => e.content === content || (t.taskId && e.content.includes(t.taskId)),
+      )
+    ) {
       tracker.entries.push({ content, priority: "high", status: "in_progress" });
       if (t.taskId) tracker.taskIds.set(t.taskId, content);
       changed = true;
@@ -907,10 +1052,21 @@ function parseRawInputObject(rawInput: unknown): Record<string, unknown> | null 
   return null;
 }
 
+function isSubagentRawObject(obj: Record<string, unknown>): boolean {
+  return (
+    "Subagents" in obj ||
+    "subagents" in obj ||
+    "Role" in obj ||
+    "role" in obj ||
+    "TypeName" in obj ||
+    "typeName" in obj
+  );
+}
+
 function inferFromRawInput(rawInput: unknown): string | null {
   const obj = parseRawInputObject(rawInput);
   if (!obj) return null;
-  if ("Subagents" in obj) return TOOL_INVOKE_SUBAGENT;
+  if (isSubagentRawObject(obj)) return TOOL_INVOKE_SUBAGENT;
   if ("Schedule" in obj || "DurationSeconds" in obj || "CronExpression" in obj)
     return TOOL_SCHEDULE;
   return null;

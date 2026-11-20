@@ -891,7 +891,7 @@ describe("ProcessSupervisor", () => {
     }
   });
 
-  it("solution: fails recycle gracefully on outbound prompt without crashing proxy or destroying stream", async () => {
+  it("solution: failed recycle rejects the prompt with the reason and hands the process to the host", async () => {
     const { child: initialChild, emitClose } = createMockChild();
     const forwarded: AcpStreamMessage[] = [];
     const cache = createSessionCache();
@@ -932,15 +932,15 @@ describe("ProcessSupervisor", () => {
       },
     } as unknown as AcpStreamMessage);
 
-    // Supervisor must NOT be closed, and must forward a JSON-RPC error response for prompt 999
-    expect(supervisor.isClosed).toBe(false);
+    // The rejection carries the underlying recycle failure, not a bare "retry the prompt".
+    // edge case: this only proves the in-memory flag; client-visible EOF is covered by cli.e2e.test.ts.
     expect(forwarded).toEqual([
       {
         jsonrpc: "2.0",
         id: 999,
         error: expect.objectContaining({
           code: -32603,
-          message: expect.stringContaining("sess-fail-recycle"),
+          message: expect.stringContaining("simulated spawn failure"),
         }),
       },
     ]);
@@ -949,7 +949,11 @@ describe("ProcessSupervisor", () => {
     emitClose();
     expect(supervisor.isClosed).toBe(false);
 
-    // Subsequent outbound message for another session or global method when child is dead must reject cleanly
+    // The escalation is deferred one macrotask, so the rejection above is delivered first.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(supervisor.isClosed).toBe(true);
+
+    // A closed supervisor ignores further prompts; the host reloads the agent instead.
     await supervisor.handleOutbound({
       jsonrpc: "2.0",
       id: 1000,
@@ -959,21 +963,89 @@ describe("ProcessSupervisor", () => {
         prompt: [{ type: "text", text: "Other" }],
       },
     } as unknown as AcpStreamMessage);
-
-    expect(supervisor.isClosed).toBe(false);
-    expect(forwarded).toHaveLength(2);
-    expect(forwarded[1]).toEqual({
-      jsonrpc: "2.0",
-      id: 1000,
-      error: expect.objectContaining({
-        code: -32603,
-        message: expect.stringContaining("Agent process is not running"),
-      }),
-    });
+    expect(forwarded).toHaveLength(1);
 
     await reader.cancel();
+  });
+
+  it("solution: successful recycle keeps the supervisor open", async () => {
+    const { child: initialChild } = createMockChild();
+    const { child: recycledChild } = createMockChild();
+    const cache = createSessionCache();
+    const session = getOrCreateSession(cache, "sess-ok-recycle");
+    session.needsRecycle = true;
+
+    const supervisor = new ProcessSupervisor({
+      cmd: "mock-agy",
+      args: [],
+      initialChild,
+      pipeline: new AcpPipeline([]),
+      sessionCache: cache,
+      spawnProcess: () => recycledChild,
+      recycleSpawnAttempts: 1,
+      recycleRetryDelayMs: 10,
+    });
+
+    recycledChild.stdin?.on("data", (chunk: Buffer) => {
+      for (const line of chunk.toString("utf-8").split("\n").filter(Boolean)) {
+        const msg = JSON.parse(line) as { id?: string | number };
+        if (msg.id) {
+          void supervisor.handleStdoutLine(
+            JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }),
+          );
+        }
+      }
+    });
+
+    await supervisor.triggerRecycle(session);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(session.needsRecycle).toBe(false);
+    expect(supervisor.isClosed).toBe(false);
     supervisor.close();
   });
+
+  it("solution: rejected mode/config replay does not fail the recycle", async () => {
+    const { child: initialChild } = createMockChild();
+    const { child: recycledChild } = createMockChild();
+    const cache = createSessionCache();
+    const session = getOrCreateSession(cache, "sess-stale-options");
+    session.needsRecycle = true;
+    session.lastModeId = "auto_edit";
+    session.lastConfigOptions.set("model", { value: "gemini-3.8-flash", type: "select" });
+
+    const supervisor = new ProcessSupervisor({
+      cmd: "mock-agy",
+      args: [],
+      initialChild,
+      pipeline: new AcpPipeline([]),
+      sessionCache: cache,
+      spawnProcess: () => recycledChild,
+      recycleSpawnAttempts: 1,
+      recycleRetryDelayMs: 10,
+    });
+
+    recycledChild.stdin?.on("data", (chunk: Buffer) => {
+      for (const line of chunk.toString("utf-8").split("\n").filter(Boolean)) {
+        const msg = JSON.parse(line) as { id?: string | number; method?: string };
+        if (msg.id === undefined) continue;
+        const isReplayOption =
+          msg.method === ACP_METHODS.SESSION_SET_MODE ||
+          msg.method === ACP_METHODS.SESSION_SET_CONFIG_OPTION;
+        const body = isReplayOption
+          ? { jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: "stale replay option" } }
+          : { jsonrpc: "2.0", id: msg.id, result: {} };
+        void supervisor.handleStdoutLine(JSON.stringify(body));
+      }
+    });
+
+    await supervisor.triggerRecycle(session);
+
+    expect(session.needsRecycle).toBe(false);
+    expect(supervisor.isClosed).toBe(false);
+    supervisor.close();
+  });
+
   it("solution: triggerRecycle rejects when process recycle fails", async () => {
     const { child: initialChild } = createMockChild();
     const cache = createSessionCache();
@@ -995,7 +1067,9 @@ describe("ProcessSupervisor", () => {
     await expect(supervisor.triggerRecycle(session)).rejects.toThrow(
       "Process recycle for session sess-fail-recycle failed",
     );
-    expect(supervisor.isClosed).toBe(false);
-    supervisor.close();
+
+    // The failure is reported to the caller and then escalated to the host.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(supervisor.isClosed).toBe(true);
   });
 });

@@ -177,7 +177,7 @@ importers:
     devDependencies:
       '@agentclientprotocol/sdk':
         specifier: ^2.7.0
-        version: 2.7.0(zod@4.6.5)
+        version: 2.9.0(zod@4.6.5)
       '@sysid/mmdlint':
         specifier: ^0.2.0
         version: 0.2.0
@@ -211,8 +211,8 @@ importers:
 
 packages:
 
-  '@agentclientprotocol/sdk@2.7.0':
-    resolution: {integrity: sha512-oXdQq0plWv3iOg01zJghNZRSuyWeMYxOgWIaSdwg1BZe2ZAC9LRhNDi023lNYxXq1zVIpQjIp8P6AfsxpvxF6g==}
+  '@agentclientprotocol/sdk@2.9.0':
+    resolution: {integrity: sha512-/mc3zQ8C8YwqERefM50/QUxMpbiA7D9UpKoav/P74jF3dJa+j+/fQZCpFsYGbnYzQRJMyQx+nP0zAOVgLCmiBQ==}
     peerDependencies:
       '@modelcontextprotocol/server': ^2.4.0
       zod: ^3.25.76 || ^4.0.0
@@ -1657,7 +1657,7 @@ packages:
 
 snapshots:
 
-  '@agentclientprotocol/sdk@2.7.0(zod@4.6.5)':
+  '@agentclientprotocol/sdk@2.9.0(zod@4.6.5)':
     dependencies:
       zod: 4.6.5
 

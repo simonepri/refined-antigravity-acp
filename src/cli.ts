@@ -84,8 +84,14 @@ export async function runCli(): Promise<void> {
   process.on("SIGTERM", () => process.exit(0));
 
   const writeStdout = (async () => {
-    for await (const value of stream.readable) {
-      process.stdout.write(JSON.stringify(value) + "\n");
+    try {
+      for await (const value of stream.readable) {
+        process.stdout.write(JSON.stringify(value) + "\n");
+      }
+    } finally {
+      // edge case: the readable only ends on terminal paths (supervisor close or crash);
+      // end stdout so the client observes EOF, then exit instead of idling on the stdin reader.
+      process.stdout.end(() => process.exit(0));
     }
   })();
 

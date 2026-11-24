@@ -361,6 +361,9 @@ Refined Antigravity ACP implements the **[Agent Client Protocol (ACP)](https://a
 > [!NOTE]
 > All synthesized and modified messages are verified against the canonical ACP JSON Schema (Draft 2020-12) and type-checked against `@agentclientprotocol/sdk` in [`src/core/acp-conformance.test.ts`](src/core/acp-conformance.test.ts).
 
+> [!IMPORTANT]
+> When a process recycle exhausts its attempts the wrapper closes the ACP stream and exits, so the client observes a disconnect and reloads the agent. Every session multiplexed on that agent process restarts with it.
+
 ---
 
 ## Development

@@ -90,6 +90,10 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 function isUsageUpdate(msg: AcpStreamMessage): boolean {
   if (!("method" in msg) || msg.method !== ACP_METHODS.SESSION_UPDATE) return false;
   const update = (msg.params as SessionUpdateParams | undefined)?.update;
@@ -574,14 +578,16 @@ export class ProcessSupervisor implements CoreContext {
       if (this.isClosed) return false;
     }
     if (session?.needsRecycle) {
-      await this.triggerRecycle(session).catch(() => {});
-    }
-    if (session?.needsRecycle) {
-      this.rejectOutboundRequest(
-        msg,
-        `Agent process recovery failed for session ${session.sessionId}. Please retry the prompt.`,
-      );
-      return false;
+      const recycleError: unknown = await this.triggerRecycle(session).catch((err: unknown) => err);
+      if (session?.needsRecycle) {
+        const reason = errorMessage(recycleError);
+        this.rejectOutboundRequest(
+          msg,
+          `Agent process recovery failed for session ${session.sessionId}: ${reason}. ` +
+            "Send the prompt again to reload the agent.",
+        );
+        return false;
+      }
     }
     if (!this.currentChild?.stdin?.writable) {
       this.rejectOutboundRequest(msg, "Agent process is not running. Please restart the session.");
@@ -815,7 +821,15 @@ export class ProcessSupervisor implements CoreContext {
       params: { sessionId: session.sessionId, modeId: session.lastModeId },
     } as unknown as AcpStreamMessage;
     const transformedMode = await this.pipeline.applyOutbound(modeMsg, context);
-    await this.sendInternalRequest(transformedMode ?? modeMsg);
+    try {
+      await this.sendInternalRequest(transformedMode ?? modeMsg);
+    } catch (err) {
+      // edge case: the session is already loaded, so a rejected mode must not fail the recycle.
+      console.error(
+        `[refined-antigravity-acp] Ignoring session/set_mode replay failure for ${session.sessionId}:`,
+        err,
+      );
+    }
   }
 
   private async resyncSessionConfig(
@@ -837,7 +851,15 @@ export class ProcessSupervisor implements CoreContext {
         params: configParams,
       } as unknown as AcpStreamMessage;
       const transformedCfg = await this.pipeline.applyOutbound(cfgMsg, context);
-      await this.sendInternalRequest(transformedCfg ?? cfgMsg);
+      try {
+        await this.sendInternalRequest(transformedCfg ?? cfgMsg);
+      } catch (err) {
+        // edge case: the session is already loaded, so a rejected option must not fail the recycle.
+        console.error(
+          `[refined-antigravity-acp] Ignoring session/set_config_option replay failure for ${session.sessionId} (${configId}):`,
+          err,
+        );
+      }
     }
   }
 
@@ -949,9 +971,11 @@ export class ProcessSupervisor implements CoreContext {
   }
 
   /**
-   * Cleans up after all recycle attempts fail without tearing down the top-level
-   * ACP stream. Leaves session.needsRecycle=true so callers can reject the active
-   * prompt cleanly with a JSON-RPC error instead of crashing the proxy process.
+   * Cleans up after all recycle attempts fail: kills the child, rejects the active
+   * prompt with the underlying reason, and escalates. Escalation closes the whole
+   * ACP stream, so every session multiplexed on this process goes down with it —
+   * correct for one-process-per-session hosts, disruptive for clients that share an
+   * agent process across sessions.
    */
   private failRecycle(session: CachedSessionMetadata, err: unknown): never {
     if (this.currentChild) {
@@ -962,12 +986,29 @@ export class ProcessSupervisor implements CoreContext {
       }
     }
 
-    const reason = err instanceof Error ? err.message : String(err);
+    const reason = errorMessage(err);
     const errorObj = new Error(
       `Process recycle for session ${session.sessionId} failed after ${this.recycleSpawnAttempts} attempt(s): ${reason}`,
     );
     console.error(`[refined-antigravity-acp] ${errorObj.message}`);
+    this.scheduleHostRecovery();
     throw errorObj;
+  }
+
+  /**
+   * Closes the ACP stream so the host performs the cold agent reload it already
+   * does for a crashed child. Deferred one macrotask: the rejection queued by
+   * prepareOutboundSession is delivered before the stream ends. The callback's
+   * isClosed check makes a repeated schedule a no-op.
+   */
+  private scheduleHostRecovery(): void {
+    setTimeout(() => {
+      if (this.isClosed) return;
+      console.error(
+        "[refined-antigravity-acp] Recycle failed; closing the ACP stream so the host reloads the agent",
+      );
+      this.close();
+    }, 0);
   }
 
   close(): void {

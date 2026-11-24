@@ -291,7 +291,6 @@ export function createPrematureTurnStopFix(options: PrematureTurnStopOptions = {
     getSystemInstructions(): readonly string[] {
       return [
         "Never end a prompt turn without emitting a clear assistant text message summarizing completed actions, current status, or next steps.",
-        "When executing commit commands, linter checks, or tests that encounter errors, explicitly explain the failures to the user before attempting further autonomous repairs.",
       ];
     },
 

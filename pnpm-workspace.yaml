@@ -42,17 +42,18 @@ minimumReleaseAgeExclude:
   - "@oxlint/binding-win32-x64-msvc@1.95.0"
   - oxfmt@0.80.0
   - oxlint@1.95.0
-  - "@vitest/mocker@5.1.1"
-  - "@vitest/spy@5.1.1"
-  - vitest@5.1.1
-  - "@fallow-cli/darwin-arm64@3.47.0"
-  - "@fallow-cli/darwin-x64@3.47.0"
-  - "@fallow-cli/linux-arm64-gnu@3.47.0"
-  - "@fallow-cli/linux-arm64-musl@3.47.0"
-  - "@fallow-cli/linux-x64-gnu@3.47.0"
-  - "@fallow-cli/linux-x64-musl@3.47.0"
-  - "@fallow-cli/win32-arm64-msvc@3.47.0"
-  - "@fallow-cli/win32-x64-msvc@3.47.0"
-  - fallow-type-aware@3.47.0
-  - fallow@3.47.0
+  - "@vitest/mocker@5.1.2"
+  - "@vitest/spy@5.1.2"
+  - vitest@5.1.2
+  - "@fallow-cli/darwin-arm64@3.49.0"
+  - "@fallow-cli/darwin-x64@3.49.0"
+  - "@fallow-cli/linux-arm64-gnu@3.49.0"
+  - "@fallow-cli/linux-arm64-musl@3.49.0"
+  - "@fallow-cli/linux-x64-gnu@3.49.0"
+  - "@fallow-cli/linux-x64-musl@3.49.0"
+  - "@fallow-cli/win32-arm64-msvc@3.49.0"
+  - "@fallow-cli/win32-x64-msvc@3.49.0"
+  - fallow-type-aware@3.49.0
+  - fallow@3.49.0
   - "@agentclientprotocol/sdk@2.9.1"
+  - "@types/node@26.6.11"

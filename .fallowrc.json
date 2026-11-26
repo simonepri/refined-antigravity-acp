@@ -1,6 +1,5 @@
 {
   "$schema": "https://raw.githubusercontent.com/fallow-rs/fallow/main/packages/cli/schema.json",
-  "entry": ["bin/cli.ts"],
   "ignoreBinaries": ["actionlint", "paseo", "yamllint"],
   "rules": {
     "boundary-violation": "off",
